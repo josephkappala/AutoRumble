@@ -1,4 +1,4 @@
-import type { ObstacleType, TurnPoint, WeatherType } from '../types/rideDirector';
+import type { ObstacleType, RouteSegment, TurnPoint, WeatherType } from '../types/rideDirector';
 import { getObstacleSpec } from './rules';
 
 export interface ActiveObstacle {
@@ -6,6 +6,8 @@ export interface ActiveObstacle {
   type: ObstacleType;
   atMeters: number;
   lane: 0 | 1 | 2;
+  lanePos?: number; // continuous lane position for crossing pedestrians
+  crossDir?: 1 | -1; // lateral walking direction for pedestrians
   colorVariant: number;
   hit: boolean;
   nearMissed: boolean;
@@ -58,15 +60,32 @@ export interface RenderSnapshot {
   destinationName: string;
   weather: WeatherType;
   landmarks: string[];
+  segments?: RouteSegment[];
   obstacles: ActiveObstacle[];
   turnPoints: Array<TurnPoint & { passed: boolean; result?: 'correct' | 'wrong' }>;
   speechBubble: SpeechBubbleState | null;
   callouts: FloatingCallout[];
   particles: Particle[];
+  vfxEnabled?: boolean;
 }
 
 const CAR_COLORS = ['#EF4444', '#2563EB', '#F97316', '#0D9488', '#DB2777', '#6366F1'];
-const SHOP_COLORS = ['#FDE68A', '#FED7AA', '#CCFBF1', '#FECDD3', '#E0E7FF'];
+
+const BENGALURU_SHOPS: ReadonlyArray<{
+  label: string;
+  wall: string;
+  awning: string;
+  signBg: string;
+  signText: string;
+}> = [
+  { label: 'DOSA', wall: '#FFEDD5', awning: '#EA580C', signBg: '#C2410C', signText: '#FFF7ED' },
+  { label: 'JUICE', wall: '#DCFCE7', awning: '#16A34A', signBg: '#15803D', signText: '#F0FDF4' },
+  { label: 'BAKERY', wall: '#FCE7F3', awning: '#DB2777', signBg: '#BE185D', signText: '#FDF2F8' },
+  { label: 'PETROL', wall: '#FEE2E2', awning: '#DC2626', signBg: '#1D4ED8', signText: '#FEF08A' },
+  { label: 'TEA', wall: '#FEF3C7', awning: '#D97706', signBg: '#92400E', signText: '#FEF3C7' },
+  { label: 'METRO', wall: '#EDE9FE', awning: '#7C3AED', signBg: '#5B21B6', signText: '#FFFFFF' },
+  { label: 'OFFICE', wall: '#DBEAFE', awning: '#2563EB', signBg: '#1E3A8A', signText: '#E0F2FE' },
+];
 
 export function computeRoadMetrics(width: number, height: number) {
   const roadWidth = Math.max(248, Math.min(440, width * 0.54));
@@ -324,39 +343,146 @@ function drawObstacle(
     }
 
     case 'bus': {
-      const isVolvo = obs.colorVariant % 3 === 0;
-      const primary = isVolvo ? '#DC2626' : '#0284C7';
-      const stripe = isVolvo ? '#FEE2E2' : '#E0F2FE';
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.32)';
+      // Classic Red BMTC Bengaluru Bus (large & slow)
+      const primary = '#DC2626';
+      const trim = '#FEF08A';
+      const stripe = '#FEE2E2';
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.34)';
       drawRoundedRect(ctx, -w / 2 + 5, -h / 2 + 6, w, h, 9);
       ctx.fill();
-      // Bus chassis
+      // Red BMTC chassis
       ctx.fillStyle = primary;
       drawRoundedRect(ctx, -w / 2, -h / 2, w, h, 8);
       ctx.fill();
-      ctx.strokeStyle = '#0F172A';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#7F1D1D';
+      ctx.lineWidth = 2.2;
       ctx.stroke();
-      // White roof strip
+      // White/cream roof strip with yellow border
       ctx.fillStyle = stripe;
       drawRoundedRect(ctx, -w * 0.36, -h * 0.38, w * 0.72, h * 0.76, 5);
       ctx.fill();
-      // AC roof pods
-      ctx.fillStyle = '#94A3B8';
-      drawRoundedRect(ctx, -w * 0.22, -h * 0.22, w * 0.44, h * 0.18, 4);
+      ctx.strokeStyle = trim;
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+      // Roof vents / AC pods
+      ctx.fillStyle = '#991B1B';
+      drawRoundedRect(ctx, -w * 0.24, -h * 0.25, w * 0.48, h * 0.14, 4);
       ctx.fill();
-      drawRoundedRect(ctx, -w * 0.22, h * 0.08, w * 0.44, h * 0.16, 4);
+      drawRoundedRect(ctx, -w * 0.24, h * 0.12, w * 0.48, h * 0.14, 4);
       ctx.fill();
       // Front glass
       ctx.fillStyle = '#0F172A';
-      drawRoundedRect(ctx, -w * 0.42, -h * 0.47, w * 0.84, 10, 3);
+      drawRoundedRect(ctx, -w * 0.42, -h * 0.47, w * 0.84, 11, 3);
       ctx.fill();
-      // BMTC label on roof
+      // Bold BMTC label on roof
       ctx.fillStyle = primary;
-      ctx.font = '800 9px "Plus Jakarta Sans", sans-serif';
+      ctx.font = '800 10px "Plus Jakarta Sans", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(isVolvo ? 'VAJRA' : 'BMTC', 0, -h * 0.01);
+      ctx.fillText('BMTC', 0, -h * 0.01);
+      break;
+    }
+
+    case 'auto': {
+      // Other Bengaluru Auto-Rickshaw in traffic
+      const aw = Math.min(42, w * 0.96);
+      const ah = Math.min(62, h * 0.96);
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.28)';
+      drawRoundedRect(ctx, -aw / 2 + 3, -ah / 2 + 4, aw, ah, 9);
+      ctx.fill();
+      // Lower green body
+      ctx.fillStyle = obs.colorVariant % 2 === 0 ? '#047857' : '#0F766E';
+      drawRoundedRect(ctx, -aw / 2, -ah / 2, aw, ah, 9);
+      ctx.fill();
+      ctx.strokeStyle = '#064E3B';
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+      // Windshield
+      ctx.fillStyle = '#1E293B';
+      drawRoundedRect(ctx, -aw * 0.36, -ah * 0.36, aw * 0.72, ah * 0.18, 4);
+      ctx.fill();
+      // Yellow canopy roof
+      ctx.fillStyle = obs.colorVariant % 2 === 0 ? '#FBBF24' : '#EAB308';
+      drawRoundedRect(ctx, -aw * 0.4, -ah * 0.16, aw * 0.8, ah * 0.56, 6);
+      ctx.fill();
+      ctx.strokeStyle = '#A16207';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      // Rear tail lights
+      ctx.fillStyle = '#FCA5A5';
+      ctx.fillRect(-aw * 0.34, ah * 0.42, 6, 3.5);
+      ctx.fillRect(aw * 0.34 - 6, ah * 0.42, 6, 3.5);
+      break;
+    }
+
+    case 'pedestrian': {
+      // Animated pedestrian crossing the road
+      const stride = Math.sin(timeSec * 10 + obs.wobblePhase) * 4.5;
+      const shirtColors = ['#EC4899', '#8B5CF6', '#06B6D4', '#F59E0B', '#10B981'];
+      const shirt = shirtColors[obs.colorVariant % shirtColors.length];
+      // Ground shadow
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.26)';
+      ctx.beginPath();
+      ctx.ellipse(2, 4, 11, 7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Stepping feet
+      ctx.fillStyle = '#1E293B';
+      ctx.beginPath();
+      ctx.ellipse(-4 + stride * 0.6, 5, 3.5, 2.5, 0, 0, Math.PI * 2);
+      ctx.ellipse(4 - stride * 0.6, -4, 3.5, 2.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Shoulders / shirt
+      ctx.fillStyle = shirt;
+      drawRoundedRect(ctx, -10, -7, 20, 14, 6);
+      ctx.fill();
+      ctx.strokeStyle = '#0F172A';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      // Head
+      ctx.fillStyle = '#1E293B';
+      ctx.beginPath();
+      ctx.arc(0, 0, 5.5, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    }
+
+    case 'traffic_cop': {
+      // Bengaluru Traffic Police (BTP) checkpoint during high chaos
+      const flash = Math.floor(timeSec * 8) % 2 === 0;
+      // Barricade
+      ctx.fillStyle = '#FACC15';
+      drawRoundedRect(ctx, -w * 0.48, -10, w * 0.96, 12, 3);
+      ctx.fill();
+      ctx.strokeStyle = '#0F172A';
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+      // Blinking beacon
+      ctx.fillStyle = flash ? '#EF4444' : '#3B82F6';
+      ctx.beginPath();
+      ctx.arc(-w * 0.34, -4, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = flash ? '#3B82F6' : '#EF4444';
+      ctx.beginPath();
+      ctx.arc(w * 0.34, -4, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      // Cop in crisp white Bengaluru Traffic Police uniform
+      ctx.fillStyle = '#F8FAFC';
+      drawRoundedRect(ctx, -9, 3, 18, 13, 5);
+      ctx.fill();
+      ctx.strokeStyle = '#0F172A';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      // Hat
+      ctx.fillStyle = '#1E3A8A';
+      ctx.beginPath();
+      ctx.arc(0, 9, 5, 0, Math.PI * 2);
+      ctx.fill();
+      // BTP tag
+      ctx.fillStyle = '#0F172A';
+      ctx.font = '800 8px "JetBrains Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('BTP', 0, -4);
       break;
     }
 
@@ -697,45 +823,53 @@ export function renderGameFrame(ctx: CanvasRenderingContext2D, snap: RenderSnaps
     seed: number,
     facingRight: boolean
   ) => {
+    const shop = BENGALURU_SHOPS[seed % BENGALURU_SHOPS.length];
+
     // Ground shadow
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.16)';
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.18)';
     drawRoundedRect(ctx, bx + 6, by + 7, bw, bh, 6);
     ctx.fill();
 
-    // Flat roof terrace base
-    ctx.fillStyle = SHOP_COLORS[seed % SHOP_COLORS.length];
+    // Colourful Bengaluru shop strip rooftop base
+    ctx.fillStyle = shop.wall;
     drawRoundedRect(ctx, bx, by, bw, bh, 6);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(15, 23, 42, 0.22)';
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.28)';
+    ctx.lineWidth = 1.6;
     ctx.stroke();
 
     // Inner parapet terrace
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.42)';
-    drawRoundedRect(ctx, bx + 8, by + 8, bw - 16, bh - 16, 3);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.48)';
+    drawRoundedRect(ctx, bx + 7, by + 7, bw - 14, bh - 14, 3);
     ctx.fill();
 
-    // Classic Bengaluru blue/black rooftop Sintex water tank or skylight
-    if (seed % 2 === 0) {
-      ctx.fillStyle = seed % 4 === 0 ? '#0284C7' : '#334155';
-      ctx.beginPath();
-      ctx.arc(bx + bw * 0.5, by + bh * 0.42, 8, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      ctx.fillStyle = '#94A3B8';
-      drawRoundedRect(ctx, bx + bw * 0.35, by + bh * 0.3, bw * 0.3, bh * 0.28, 2);
-      ctx.fill();
+    // Striped colourful shop awning facing the road
+    const awningW = 13;
+    const awningX = facingRight ? bx + bw - awningW : bx;
+    ctx.fillStyle = shop.awning;
+    ctx.fillRect(awningX, by + 5, awningW, bh - 10);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    for (let sy = by + 9; sy < by + bh - 10; sy += 11) {
+      ctx.fillRect(awningX, sy, awningW, 4.5);
     }
 
-    // Striped Darshini / Filter Coffee shop awning facing the road
-    const awningW = 12;
-    const awningX = facingRight ? bx + bw - awningW : bx;
-    ctx.fillStyle = seed % 3 === 0 ? '#EA580C' : seed % 3 === 1 ? '#0F766E' : '#CA8A04';
-    ctx.fillRect(awningX, by + 6, awningW, bh - 12);
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
-    for (let sy = by + 10; sy < by + bh - 12; sy += 12) {
-      ctx.fillRect(awningX, sy, awningW, 5);
-    }
+    // Bold painted shop signboard (DOSA, JUICE, BAKERY, PETROL, TEA, METRO, OFFICE)
+    const signW = Math.max(46, bw - awningW - 14);
+    const signH = 20;
+    const signX = facingRight ? bx + 6 : bx + awningW + 7;
+    const signY = by + (bh - signH) * 0.5;
+    ctx.fillStyle = shop.signBg;
+    drawRoundedRect(ctx, signX, signY, signW, signH, 4);
+    ctx.fill();
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+
+    ctx.fillStyle = shop.signText;
+    ctx.font = '800 10px "Plus Jakarta Sans", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(shop.label, signX + signW * 0.5, signY + signH * 0.5 + 0.5);
   };
 
   for (let idx = firstPropIdx; idx <= lastPropIdx; idx++) {
@@ -806,20 +940,34 @@ export function renderGameFrame(ctx: CanvasRenderingContext2D, snap: RenderSnaps
     }
   }
 
-  // 4. Bengaluru roadside landmark signboards from Gemini route
-  const landmarks = snap.landmarks;
-  if (landmarks.length > 0) {
-    const spacing = Math.max(130, Math.floor(snap.routeLengthMeters / (landmarks.length + 1)));
-    landmarks.forEach((lm, idx) => {
-      const lmMeters = (idx + 1) * spacing;
-      const sy = playerScreenY - (lmMeters - playerMeters) * pxPerMeter;
-      if (sy > -50 && sy < height + 50) {
-        const onRight = idx % 2 === 0;
-        const sx = onRight ? roadLeft + roadWidth + 12 : roadLeft - 12;
-        drawBengaluruSignboard(ctx, sx, sy, lm, !onRight);
-      }
+  // 4. Bengaluru roadside landmark signboards from Gemini / Google Maps route segments
+  const signboardItems: Array<{ label: string; atMeters: number }> = [];
+  if (snap.segments && snap.segments.length > 0) {
+    for (const seg of snap.segments) {
+      const segStart = seg.startMeters ?? 0;
+      const segEnd = seg.endMeters ?? snap.routeLengthMeters;
+      const segLandmarks = seg.landmarks.length > 0 ? seg.landmarks : [seg.roadName];
+      const segSpan = Math.max(80, segEnd - segStart);
+      segLandmarks.forEach((lm, lmIdx) => {
+        const lmMeters = segStart + ((lmIdx + 0.65) / (segLandmarks.length + 0.35)) * segSpan;
+        signboardItems.push({ label: lm, atMeters: lmMeters });
+      });
+    }
+  } else if (snap.landmarks.length > 0) {
+    const spacing = Math.max(130, Math.floor(snap.routeLengthMeters / (snap.landmarks.length + 1)));
+    snap.landmarks.forEach((lm, idx) => {
+      signboardItems.push({ label: lm, atMeters: (idx + 1) * spacing });
     });
   }
+
+  signboardItems.forEach((item, idx) => {
+    const sy = playerScreenY - (item.atMeters - playerMeters) * pxPerMeter;
+    if (sy > -50 && sy < height + 50) {
+      const onRight = idx % 2 === 0;
+      const sx = onRight ? roadLeft + roadWidth + 12 : roadLeft - 12;
+      drawBengaluruSignboard(ctx, sx, sy, item.label, !onRight);
+    }
+  });
 
   // 5. Turn Point Junction Markings & Overhead Sign Gantries
   for (const tp of snap.turnPoints) {
@@ -918,27 +1066,31 @@ export function renderGameFrame(ctx: CanvasRenderingContext2D, snap: RenderSnaps
     drawObstacle(ctx, obs, cx, sy, laneWidth, pxPerMeter, timeSec);
   }
 
-  // 8. Solid vehicles & cows
+  // 8. Solid vehicles, pedestrians, cows & traffic cops
   for (const obs of snap.obstacles) {
     if (groundTypes.includes(obs.type)) continue;
     const sy = playerScreenY - (obs.atMeters - playerMeters) * pxPerMeter;
     if (sy < -150 || sy > height + 150) continue;
-    const cx = roadLeft + (obs.lane + 0.5) * laneWidth;
+    const effectiveLane = typeof obs.lanePos === 'number' ? obs.lanePos : obs.lane;
+    const cx = roadLeft + (effectiveLane + 0.5) * laneWidth;
     drawObstacle(ctx, obs, cx, sy, laneWidth, pxPerMeter, timeSec);
   }
 
-  // 9. Pooled particles (exhaust, sparks, splashes, confetti)
-  for (let i = 0; i < snap.particles.length; i++) {
-    const p = snap.particles[i];
-    if (!p.active) continue;
-    const alpha = Math.max(0, p.life / p.maxLife);
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = p.color;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-    ctx.fill();
+  // 9. Pooled particles (exhaust, sparks, splashes, confetti) — toggled by E (vfxEnabled)
+  const vfxOn = snap.vfxEnabled !== false;
+  if (vfxOn) {
+    for (let i = 0; i < snap.particles.length; i++) {
+      const p = snap.particles[i];
+      if (!p.active) continue;
+      const alpha = Math.max(0, p.life / p.maxLife);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
   }
-  ctx.globalAlpha = 1;
 
   // 10. Player Yellow-and-Green Bengaluru Auto-Rickshaw
   const playerX = roadLeft + (snap.playerLanePos + 0.5) * laneWidth;
@@ -949,8 +1101,8 @@ export function renderGameFrame(ctx: CanvasRenderingContext2D, snap: RenderSnaps
     laneWidth,
     snap.playerLean,
     snap.braking,
-    snap.hitFlashSec > 0,
-    snap.bouncePhase,
+    vfxOn && snap.hitFlashSec > 0,
+    vfxOn ? snap.bouncePhase : 0,
     timeSec
   );
 
@@ -970,7 +1122,7 @@ export function renderGameFrame(ctx: CanvasRenderingContext2D, snap: RenderSnaps
   }
 
   // 12. Weather rain streaks overlay (drizzle / monsoon)
-  if (weather === 'drizzle' || weather === 'monsoon') {
+  if (vfxOn && (weather === 'drizzle' || weather === 'monsoon')) {
     const dropCount = weather === 'monsoon' ? 68 : 28;
     ctx.strokeStyle =
       weather === 'monsoon'

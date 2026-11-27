@@ -1,13 +1,16 @@
 import React from 'react';
-import { Play, Terminal, AlertTriangle, RotateCcw } from 'lucide-react';
+import { Play, Terminal, AlertTriangle, RotateCcw, KeyRound } from 'lucide-react';
 
 interface TitleOverlayProps {
   loading: boolean;
   error: string | null;
   logCount: number;
   logOpen: boolean;
+  hasApiKey: boolean | null;
+  canConfigureApiKey: boolean;
   onStartRide: () => void;
   onToggleLog: () => void;
+  onOpenApiKeyModal: () => void;
 }
 
 export const TitleOverlay: React.FC<TitleOverlayProps> = ({
@@ -15,13 +18,34 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
   error,
   logCount,
   logOpen,
+  hasApiKey,
+  canConfigureApiKey,
   onStartRide,
   onToggleLog,
+  onOpenApiKeyModal,
 }) => {
   return (
     <div className="pointer-events-none absolute inset-0 z-20 flex flex-col justify-between p-4 sm:p-6">
-      {/* Top-right single utility action for Ride Director log */}
-      <div className="flex items-start justify-end">
+      {/* Top utility actions: Gemini API key (dev only) & Ride Director log */}
+      <div className={`flex items-start gap-3 ${canConfigureApiKey ? 'justify-between' : 'justify-end'}`}>
+        {canConfigureApiKey && (
+          <button
+            type="button"
+            onClick={onOpenApiKeyModal}
+            className={`pointer-events-auto inline-flex items-center gap-2 rounded-lg border-2 border-slate-900 px-3.5 py-2 text-xs font-semibold shadow-[3px_3px_0px_#0f172a] transition-transform hover:-translate-y-0.5 active:translate-y-0 whitespace-nowrap shrink-0 cursor-pointer ${
+              hasApiKey === false
+                ? 'bg-amber-300 text-slate-950'
+                : 'bg-white text-slate-900'
+            }`}
+          >
+            <KeyRound
+              className={`h-4 w-4 ${hasApiKey === false ? 'text-slate-950' : 'text-emerald-700'}`}
+              aria-hidden="true"
+            />
+            <span>{hasApiKey ? 'Gemini Key ✓' : 'Set Gemini Key'}</span>
+          </button>
+        )}
+
         <button
           type="button"
           onClick={onToggleLog}
@@ -150,7 +174,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
       {/* Flat borderless bottom safe-margin control hint */}
       <div className="flex justify-center pb-1">
         <p className="rounded-md bg-slate-950/80 px-3.5 py-1.5 text-xs font-medium tracking-wide text-slate-100">
-          ← → Steer Lanes · ↑ ↓ Speed · H Horn · P Pause · M Audio
+          ← → Steer (or Tap Left/Right) · ↑ ↓ Speed · H Horn · P Pause · M Mute · E Effects
         </p>
       </div>
     </div>

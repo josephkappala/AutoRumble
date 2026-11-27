@@ -50,8 +50,13 @@ export const SummaryModal: React.FC<SummaryModalProps> = ({
         className="pointer-events-auto max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-2xl border-2 border-slate-900 bg-[#FFFDF7] p-6 shadow-[6px_6px_0px_#0f172a] custom-scrollbar"
       >
         <div className="flex items-center justify-between text-xs font-semibold text-slate-500">
-          <span>
-            Ride #{rideNumber} · {stats.completed ? 'Drop-off Reached' : 'Time Expired'}
+          <span className={stats.gameOver ? 'font-extrabold text-red-600' : ''}>
+            Ride #{rideNumber} ·{' '}
+            {stats.gameOver
+              ? 'GAME OVER · 0 Hearts Left'
+              : stats.completed
+                ? 'Drop-off Reached'
+                : 'Time Expired'}
           </span>
           <span className="font-mono-tabular text-emerald-800">
             Session Total ₹{totalEarnings}
@@ -60,12 +65,41 @@ export const SummaryModal: React.FC<SummaryModalProps> = ({
 
         <h2
           id="summary-heading"
-          className="font-display mt-1.5 text-2xl font-extrabold text-slate-900"
+          className={`font-display mt-1.5 text-2xl font-extrabold ${
+            stats.gameOver ? 'text-red-700' : 'text-slate-900'
+          }`}
         >
-          {stats.completed
-            ? `Dropped ${passenger.name} at ${passenger.destination}`
-            : `${passenger.name} hopped out early!`}
+          {stats.gameOver
+            ? 'Auto Wrecked — Game Over!'
+            : stats.completed
+              ? `Dropped ${passenger.name} at ${passenger.destination}`
+              : `${passenger.name} hopped out early!`}
         </h2>
+
+        {/* Score & High Score Banner */}
+        <div className="mt-3 grid grid-cols-2 gap-2.5">
+          <div className="rounded-xl border-2 border-slate-900 bg-slate-900 px-3.5 py-2.5 text-white">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              Score
+            </div>
+            <div className="font-mono-tabular text-2xl font-extrabold text-emerald-400">
+              {stats.score}
+            </div>
+          </div>
+          <div className="rounded-xl border-2 border-slate-900 bg-amber-100 px-3.5 py-2.5 text-slate-950">
+            <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-amber-900">
+              <span>High Score</span>
+              {stats.score > 0 && stats.score >= stats.highScore && (
+                <span className="rounded bg-amber-400 px-1.5 py-0.5 text-[9px] text-slate-950">
+                  NEW!
+                </span>
+              )}
+            </div>
+            <div className="font-mono-tabular text-2xl font-extrabold text-slate-950">
+              {stats.highScore}
+            </div>
+          </div>
+        </div>
 
         {/* Star Rating + Passenger Voice Story from Gemini */}
         <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
@@ -177,11 +211,11 @@ export const SummaryModal: React.FC<SummaryModalProps> = ({
           {loadingNextRide ? (
             <>
               <RotateCcw className="h-4 w-4 animate-spin" aria-hidden="true" />
-              <span>Dispatching Ride #{rideNumber + 1}…</span>
+              <span>{stats.gameOver ? 'Starting Fresh Run…' : `Dispatching Ride #${rideNumber + 1}…`}</span>
             </>
           ) : (
             <>
-              <span>Start Ride #{rideNumber + 1}</span>
+              <span>{stats.gameOver ? 'Play Again (5 Hearts)' : `Start Ride #${rideNumber + 1}`}</span>
               <ArrowRight className="h-4 w-4" aria-hidden="true" />
             </>
           )}

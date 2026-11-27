@@ -5,6 +5,7 @@ import type {
   TurnPoint,
 } from '../types/rideDirector';
 import { rideDirectorClient } from '../services/rideDirectorClient';
+import { passengerVoice } from '../services/passengerVoice';
 import { rickshawAudio } from './audio';
 import {
   computeRoadMetrics,
@@ -34,6 +35,14 @@ export interface HudTelemetry {
   speedKmh: number;
   crashes: number;
   nearMisses: number;
+  score: number;
+  combo: number;
+  highScore: number;
+  lives: number;
+  maxLives: number;
+  chaos: number;
+  trafficDensity: number;
+  steeringLean: number;
   upcomingTurn: {
     landmark: string;
     distanceMeters: number;
@@ -42,10 +51,13 @@ export interface HudTelemetry {
   turnMarkers: Array<{ ratio: number; status: 'pending' | 'correct' | 'wrong' }>;
   weather: string;
   currentLane: 0 | 1 | 2;
+  currentRoadName: string | null;
+  activeHotspot: string | null;
 }
 
 export interface RideCompletionPayload {
   completed: boolean;
+  gameOver: boolean;
   timeElapsedSeconds: number;
   timeRemainingSeconds: number;
   crashes: number;
@@ -55,6 +67,11 @@ export interface RideCompletionPayload {
   avgSpeedKmh: number;
   fare: number;
   finalMood: number;
+  score: number;
+  highScore: number;
+  livesRemaining: number;
+  avgChaos: number;
+  peakChaos: number;
 }
 
 interface EngineCallbacks {
@@ -66,6 +83,28 @@ const PARTICLE_POOL_SIZE = 120;
 const BASE_CRUISE_MPS = 20; // ~72 km/h arcade feel
 const MIN_SPEED_MPS = 8.5; // ~31 km/h braking
 const MAX_SPEED_MPS = 30.5; // ~110 km/h full throttle
+const MAX_LIVES = 5;
+const HIGH_SCORE_STORAGE_KEY = 'rickshaw_rumble_high_score';
+
+function readStoredHighScore(): number {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return 0;
+    const raw = window.localStorage.getItem(HIGH_SCORE_STORAGE_KEY);
+    const parsed = raw ? parseInt(raw, 10) : 0;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeStoredHighScore(score: number): void {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.setItem(HIGH_SCORE_STORAGE_KEY, String(Math.round(score)));
+  } catch {
+    // ignore storage quota / privacy mode errors
+  }
+}
 
 export class RickshawGameEngine {
   private canvas: HTMLCanvasElement;
@@ -100,6 +139,22 @@ export class RickshawGameEngine {
   private correctTurns = 0;
   private speedAccumulator = 0;
   private speedSamples = 0;
+
+  // Auto Mayhem arcade state: Scoring, Combo, Lives, Chaos & VFX
+  private score = 0;
+  private combo = 1;
+  private safePassStreak = 0;
+  private comboX3Notified = false;
+  private highScore = readStoredHighScore();
+  private lives = MAX_LIVES;
+  private chaos = 12;
+  private chaosAccumulator = 0;
+  private chaosSamples = 0;
+  private peakChaos = 12;
+  private chaos50Notified = false;
+  private chaos80Notified = false;
+  private nextDynamicObstacleId = 1000;
+  private vfxEnabled = true;
 
   // Feel & juice
   private hitstopSec = 0;
@@ -294,10 +349,16 @@ export class RickshawGameEngine {
     this.touchBrake = active;
   }
 
+  setVfxEnabled(enabled: boolean) {
+    this.vfxEnabled = enabled;
+    this.needsStaticRedraw = true;
+  }
+
   setAmbientMode() {
     this.rideSessionId++;
     this.mode = 'ambient';
     this.clearHeldInputs();
+    passengerVoice.stop();
     this.speechBubble = null;
     this.callouts = [];
     this.playerLanePos = 1;
@@ -309,6 +370,7 @@ export class RickshawGameEngine {
     if (this.mode === 'playing' && paused) {
       this.mode = 'paused';
       this.clearHeldInputs();
+      passengerVoice.stop();
     } else if (this.mode === 'paused' && !paused) {
       this.mode = 'playing';
       this.lastFrameMs = performance.now();
@@ -319,7 +381,8 @@ export class RickshawGameEngine {
     passenger: PassengerProfile,
     rawRoute: RoutePlan,
     agreedFare: number,
-    timerSeconds: number
+    timerSeconds: number,
+    options?: { initialScore?: number; initialLives?: number }
   ) {
     this.rideSessionId++;
     const sessionId = this.rideSessionId;
@@ -346,6 +409,18 @@ export class RickshawGameEngine {
     this.speedAccumulator = 0;
     this.speedSamples = 0;
 
+    this.score = options?.initialScore ?? 0;
+    this.combo = 1;
+    this.safePassStreak = 0;
+    this.comboX3Notified = false;
+    this.lives = clamp(options?.initialLives ?? MAX_LIVES, 1, MAX_LIVES);
+    this.chaos = 12;
+    this.chaosAccumulator = 0;
+    this.chaosSamples = 0;
+    this.peakChaos = 12;
+    this.chaos50Notified = false;
+    this.chaos80Notified = false;
+
     this.hitstopSec = 0;
     this.hitFlashSec = 0;
     this.bouncePhase = 0;
@@ -359,6 +434,8 @@ export class RickshawGameEngine {
       type: ev.type,
       atMeters: ev.atMeters,
       lane: ev.lane,
+      lanePos: ev.type === 'pedestrian' ? ev.lane : undefined,
+      crossDir: ev.type === 'pedestrian' ? (idx % 2 === 0 ? 1 : -1) : undefined,
       colorVariant: (idx * 7 + ev.lane) % 6,
       hit: false,
       nearMissed: false,
@@ -465,6 +542,7 @@ export class RickshawGameEngine {
       urgent,
       remainingSec: durationSec,
     };
+    void passengerVoice.speak(text, this.passenger, { urgent });
   }
 
   private triggerLiveReaction(
@@ -473,7 +551,13 @@ export class RickshawGameEngine {
     urgent: boolean
   ) {
     if (!this.passenger || !this.route) return;
-    const isPriority = eventType === 'crash' || eventType === 'wrong_turn';
+    const isPriority =
+      eventType === 'crash' ||
+      eventType === 'wrong_turn' ||
+      eventType === 'chaos_80' ||
+      eventType === 'chaos_50' ||
+      eventType === 'combo_x3' ||
+      eventType === 'traffic_cop';
     if (!isPriority && this.timeSec - this.lastReactionAtSec < 2.6) {
       return;
     }
@@ -497,6 +581,8 @@ export class RickshawGameEngine {
           eventType,
           detail,
           mood: this.mood,
+          chaos: Math.round(this.chaos),
+          combo: this.combo,
           speedKmh: mpsToKmh(this.playerSpeedMps),
           remainingMeters: Math.max(0, this.route.lengthMeters - this.playerMeters),
           timeRemainingSeconds: Math.max(0, this.timerSeconds),
@@ -512,6 +598,9 @@ export class RickshawGameEngine {
           urgent,
           remainingSec: 4.4,
         };
+        if (this.passenger) {
+          void passengerVoice.speak(res.line, this.passenger, { urgent });
+        }
       })
       .catch(() => {
         if (this.rideSessionId !== sessionId || this.speechToken !== token) return;
@@ -678,9 +767,18 @@ export class RickshawGameEngine {
     const prevMeters = this.playerMeters;
     this.playerMeters += this.playerSpeedMps * dt;
 
-    // Track avg speed
-    this.speedAccumulator += mpsToKmh(this.playerSpeedMps);
+    // Track avg speed & update Chaos Meter (0-100%)
+    const currentKmh = mpsToKmh(this.playerSpeedMps);
+    this.speedAccumulator += currentKmh;
     this.speedSamples++;
+
+    if (currentKmh > 86) {
+      this.adjustChaos(6.5 * dt);
+    } else if (currentKmh <= 78) {
+      this.adjustChaos(-4.5 * dt);
+    }
+    this.chaosAccumulator += this.chaos;
+    this.chaosSamples++;
 
     // Exhaust puffs
     this.exhaustTimer += dt;
@@ -762,10 +860,12 @@ export class RickshawGameEngine {
 
         if (evalResult.correct) {
           this.correctTurns++;
+          this.addScore(75 * this.combo);
           rickshawAudio.playCleanTurn();
-          this.addCallout(`CLEAN TURN! +${evalResult.moodDelta} MOOD`, '#4ADE80');
+          this.addCallout(`CLEAN TURN! +${75 * this.combo}`, '#4ADE80');
         } else {
           this.wrongTurns++;
+          this.adjustChaos(12);
           this.trauma = Math.min(1, this.trauma + 0.55);
           rickshawAudio.playWrongTurn();
           this.addCallout(
@@ -795,9 +895,25 @@ export class RickshawGameEngine {
 
     for (const obs of this.obstacles) {
       const spec = getObstacleSpec(obs.type);
-      // Only move traffic obstacles when within 130m ahead so route pacing matches Gemini's plan
+      // Only move traffic obstacles when within 115m ahead so route pacing matches Gemini's plan
       if (spec.speedMps > 0 && obs.atMeters - this.playerMeters < 115 && obs.atMeters > this.playerMeters - 40) {
         obs.atMeters += spec.speedMps * 0.45 * dt;
+      }
+      // Crossing pedestrians walk laterally across lanes
+      if (obs.type === 'pedestrian' && obs.atMeters - this.playerMeters < 120 && obs.atMeters > this.playerMeters - 20) {
+        const curPos = typeof obs.lanePos === 'number' ? obs.lanePos : obs.lane;
+        let dir = obs.crossDir ?? 1;
+        let nextPos = curPos + dir * 0.55 * dt;
+        if (nextPos >= 2) {
+          nextPos = 2;
+          dir = -1;
+        } else if (nextPos <= 0) {
+          nextPos = 0;
+          dir = 1;
+        }
+        obs.lanePos = nextPos;
+        obs.crossDir = dir;
+        obs.lane = clamp(Math.round(nextPos), 0, 2) as 0 | 1 | 2;
       }
 
       const outcome = evaluateObstacleInteraction({
@@ -805,7 +921,7 @@ export class RickshawGameEngine {
         playerLanePos: this.playerLanePos,
         playerSpeedMps: this.playerSpeedMps,
         obstacleMeters: obs.atMeters,
-        obstacleLane: obs.lane,
+        obstacleLane: typeof obs.lanePos === 'number' ? obs.lanePos : obs.lane,
         obstacleType: obs.type,
         alreadyHit: obs.hit,
         alreadyNearMissed: obs.nearMissed,
@@ -828,6 +944,7 @@ export class RickshawGameEngine {
         } else if (obs.type === 'pothole' || obs.type === 'speed_breaker') {
           this.bouncePhase = 1.0;
           this.trauma = Math.min(1, this.trauma + 0.48);
+          this.adjustChaos(8);
           this.playerSpeedMps = Math.max(MIN_SPEED_MPS, this.playerSpeedMps * 0.65);
           this.spawnParticles(px, playerScreenY + 12, 12, '#94A3B8', 110, 4);
           this.addCallout(
@@ -843,8 +960,13 @@ export class RickshawGameEngine {
             false
           );
         } else {
-          // Heavy crash into car, bus, bike, cow, or traffic_jam
+          // Heavy crash into car, red BMTC bus, auto, bike, pedestrian, cow, traffic_jam, or traffic_cop
           this.crashes++;
+          this.safePassStreak = 0;
+          this.combo = 1;
+          this.comboX3Notified = false;
+          this.lives = Math.max(0, this.lives - 1);
+          this.adjustChaos(22);
           this.hitstopSec = 0.055;
           this.hitFlashSec = 0.24;
           this.trauma = Math.min(1, this.trauma + 0.85);
@@ -852,27 +974,53 @@ export class RickshawGameEngine {
           this.spawnParticles(px, playerScreenY - 12, 22, '#FACC15', 190, 4.5);
           this.spawnParticles(px, playerScreenY - 12, 10, '#EF4444', 150, 3.5);
           this.addCallout(
-            `CRASH! -${spec.timePenaltySec}s · -${spec.moodPenalty} MOOD`,
+            `CRASH! -1 HEART · COMBO RESET`,
             '#EF4444'
           );
           rickshawAudio.playCrash();
+
+          if (this.lives <= 0) {
+            this.finishRide(false, true);
+            return;
+          }
+
           this.triggerLiveReaction(
-            'crash',
-            `Crashed right into a ${spec.label} in the ${laneIndexToName(obs.lane)} lane`,
+            obs.type === 'traffic_cop' ? 'traffic_cop' : 'crash',
+            obs.type === 'traffic_cop'
+              ? 'Got flagged down by a Bengaluru Traffic Police cop in high chaos!'
+              : `Crashed right into a ${spec.label} in the ${laneIndexToName(obs.lane)} lane`,
             true
           );
         }
       } else if (outcome === 'near_miss') {
         obs.nearMissed = true;
         this.nearMisses++;
+        this.safePassStreak++;
+        this.combo = this.safePassStreak;
+        const points = 50 * this.combo;
+        this.addScore(points);
+        this.adjustChaos(9);
         this.mood = computeFinalMood(this.mood, 2);
         rickshawAudio.playNearMiss();
-        this.addCallout('NEAR MISS! +2 MOOD', '#38BDF8');
-        this.triggerLiveReaction(
-          'near_miss',
-          `Squeezed past a ${spec.label} by inches at ${mpsToKmh(this.playerSpeedMps)} km/h`,
-          false
+        this.addCallout(
+          this.combo > 1 ? `SAFE PASS +${points} (x${this.combo})` : `SAFE PASS +${points}`,
+          '#4ADE80'
         );
+
+        if (this.combo === 3 && !this.comboX3Notified) {
+          this.comboX3Notified = true;
+          this.triggerLiveReaction(
+            'combo_x3',
+            `Hit a x3 Safe Pass combo (+${points} pts) squeezing past a ${spec.label}!`,
+            false
+          );
+        } else {
+          this.triggerLiveReaction(
+            'near_miss',
+            `Safe pass past a ${spec.label} by inches at ${mpsToKmh(this.playerSpeedMps)} km/h (x${this.combo} combo)`,
+            false
+          );
+        }
       }
     }
 
@@ -894,12 +1042,77 @@ export class RickshawGameEngine {
     }
   }
 
-  private finishRide(completed: boolean) {
+  private addScore(points: number) {
+    this.score += Math.round(points);
+    if (this.score > this.highScore) {
+      this.highScore = this.score;
+      writeStoredHighScore(this.highScore);
+    }
+  }
+
+  private adjustChaos(delta: number) {
+    const prev = this.chaos;
+    this.chaos = clamp(this.chaos + delta, 0, 100);
+    if (this.chaos > this.peakChaos) {
+      this.peakChaos = this.chaos;
+    }
+
+    if (this.chaos < 42) this.chaos50Notified = false;
+    if (this.chaos < 72) this.chaos80Notified = false;
+
+    if (prev < 50 && this.chaos >= 50 && !this.chaos50Notified) {
+      this.chaos50Notified = true;
+      this.triggerLiveReaction(
+        'chaos_50',
+        `Chaos meter crossed 50% (${Math.round(this.chaos)}%) during wild Bengaluru weaving!`,
+        false
+      );
+    } else if (prev < 80 && this.chaos >= 80 && !this.chaos80Notified) {
+      this.chaos80Notified = true;
+      this.spawnTrafficCopAhead();
+      this.triggerLiveReaction(
+        'chaos_80',
+        `Chaos meter hit ${Math.round(this.chaos)}%! Passenger panicking as a Bengaluru Traffic Police cop appears ahead!`,
+        true
+      );
+    }
+  }
+
+  private spawnTrafficCopAhead() {
+    if (!this.route) return;
+    const copMeters = Math.round(this.playerMeters + 110);
+    if (copMeters >= this.route.lengthMeters - 70) return;
+
+    // Pick a lane that won't block all 3 lanes around copMeters
+    const blocked = new Set<number>();
+    for (const obs of this.obstacles) {
+      if (Math.abs(obs.atMeters - copMeters) < 30) {
+        blocked.add(obs.lane);
+      }
+    }
+    const candidateLanes: Array<0 | 1 | 2> = [this.targetLane, 1, 0, 2];
+    const lane = candidateLanes.find((l) => !blocked.has(l) && blocked.size < 2);
+    if (lane === undefined) return;
+
+    this.obstacles.push({
+      id: ++this.nextDynamicObstacleId,
+      type: 'traffic_cop',
+      atMeters: copMeters,
+      lane,
+      colorVariant: 0,
+      hit: false,
+      nearMissed: false,
+      wobblePhase: 0,
+    });
+  }
+
+  private finishRide(completed: boolean, gameOver = false) {
     this.mode = 'finished';
     this.clearHeldInputs();
     rickshawAudio.playFinish(completed);
 
     if (completed) {
+      this.addScore(200);
       const { roadLeft, laneWidth, playerScreenY } = computeRoadMetrics(
         this.width,
         this.height
@@ -912,9 +1125,12 @@ export class RickshawGameEngine {
     this.emitHud();
     const avgSpeedKmh =
       this.speedSamples > 0 ? this.speedAccumulator / this.speedSamples : 65;
+    const avgChaos =
+      this.chaosSamples > 0 ? this.chaosAccumulator / this.chaosSamples : this.chaos;
 
     this.callbacks.onRideComplete({
       completed,
+      gameOver,
       timeElapsedSeconds: this.timeElapsed,
       timeRemainingSeconds: Math.max(0, this.timerSeconds),
       crashes: this.crashes,
@@ -924,6 +1140,11 @@ export class RickshawGameEngine {
       avgSpeedKmh,
       fare: completed ? this.fare : Math.round(this.fare * 0.4),
       finalMood: this.mood,
+      score: this.score,
+      highScore: this.highScore,
+      livesRemaining: this.lives,
+      avgChaos,
+      peakChaos: this.peakChaos,
     });
   }
 
@@ -940,6 +1161,21 @@ export class RickshawGameEngine {
       (tp) => !tp.passed && tp.atMeters - this.playerMeters <= 200
     );
 
+    // Current real road segment from Google Maps grounding
+    const segments = this.route.segments;
+    let currentRoadName: string | null = null;
+    let activeHotspot: string | null = null;
+    if (segments && segments.length > 0) {
+      const seg =
+        segments.find(
+          (s) =>
+            this.playerMeters >= (s.startMeters ?? 0) &&
+            this.playerMeters < (s.endMeters ?? this.route!.lengthMeters)
+        ) ?? segments[segments.length - 1];
+      currentRoadName = seg.roadName;
+      activeHotspot = seg.hotspot ?? null;
+    }
+
     this.callbacks.onHudUpdate({
       fare: this.fare,
       timerSeconds: Math.ceil(this.timerSeconds),
@@ -949,6 +1185,14 @@ export class RickshawGameEngine {
       speedKmh: mpsToKmh(this.playerSpeedMps),
       crashes: this.crashes,
       nearMisses: this.nearMisses,
+      score: this.score,
+      combo: this.combo,
+      highScore: this.highScore,
+      lives: this.lives,
+      maxLives: MAX_LIVES,
+      chaos: Math.round(this.chaos),
+      trafficDensity: this.route.trafficDensity,
+      steeringLean: this.playerLean,
       upcomingTurn: nextTp
         ? {
             landmark: nextTp.landmark,
@@ -962,11 +1206,13 @@ export class RickshawGameEngine {
       })),
       weather: this.route.weather,
       currentLane: this.targetLane,
+      currentRoadName,
+      activeHotspot,
     });
   }
 
   private render() {
-    const shakeMag = this.trauma * this.trauma * 12;
+    const shakeMag = this.vfxEnabled ? this.trauma * this.trauma * 12 : 0;
     const shakeX = shakeMag > 0.1 ? (Math.random() * 2 - 1) * shakeMag : 0;
     const shakeY = shakeMag > 0.1 ? (Math.random() * 2 - 1) * shakeMag : 0;
 
@@ -997,11 +1243,13 @@ export class RickshawGameEngine {
       landmarks: isAmbient
         ? ['Silk Board', 'Koramangala', 'Forum Mall', 'Indiranagar', 'MG Road']
         : this.route?.landmarks ?? [],
+      segments: isAmbient ? undefined : this.route?.segments,
       obstacles: isAmbient ? this.ambientObstacles : this.obstacles,
       turnPoints: isAmbient ? [] : this.turnPoints,
       speechBubble: isAmbient ? null : this.speechBubble,
       callouts: this.callouts,
       particles: this.particles,
+      vfxEnabled: this.vfxEnabled,
     });
   }
 }

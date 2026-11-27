@@ -3,11 +3,14 @@ export type LanguageStyle = 'English' | 'Kannada-English' | 'Hinglish';
 export type ObstacleType =
   | 'car'
   | 'bus'
+  | 'auto'
   | 'bike'
+  | 'pedestrian'
   | 'cow'
   | 'pothole'
   | 'speed_breaker'
   | 'traffic_jam'
+  | 'traffic_cop'
   | 'rain_patch';
 
 export type WeatherType = 'sunny' | 'overcast' | 'drizzle' | 'monsoon';
@@ -19,6 +22,7 @@ export interface PassengerProfile {
   pickup: string;
   destination: string;
   openingLine: string;
+  openingLineEnglish?: string;
   fareOffer: number;
 }
 
@@ -28,9 +32,25 @@ export interface RouteEvent {
   lane: 0 | 1 | 2;
 }
 
+export interface RouteSegment {
+  roadName: string;
+  lengthMeters: number;
+  startMeters?: number;
+  endMeters?: number;
+  landmarks: string[];
+  hotspot?: string | null;
+}
+
+export interface TodayHotspot {
+  location: string;
+  reason: string;
+  matchedRoad?: string;
+}
+
 export interface TurnPoint {
   atMeters: number;
   correctLane: 0 | 1 | 2;
+  direction?: 'left' | 'straight' | 'right';
   landmark: string;
 }
 
@@ -41,6 +61,11 @@ export interface RoutePlan {
   trafficDensity: number; // 1-10
   events: RouteEvent[];
   turnPoints: TurnPoint[];
+  segments?: RouteSegment[];
+  mapsGrounded?: boolean;
+  mapsError?: string | null;
+  todayHotspots?: TodayHotspot[];
+  mapsSources?: Array<{ title: string; uri: string }>;
 }
 
 export interface DifficultyConfig {
@@ -85,10 +110,36 @@ export interface BargainRequest {
   rideNumber: number;
 }
 
+export interface VoiceBargainRequest {
+  passenger: PassengerProfile;
+  currentFare: number;
+  rideNumber: number;
+  audioBase64: string;
+  mimeType: string;
+}
+
 export interface BargainResponse {
+  heardText?: string;
   reply: string;
   acceptedFare: number;
   outcome: 'accepted' | 'halfway' | 'refused';
+}
+
+export interface VoiceBargainResponse extends BargainResponse {
+  heardText: string;
+}
+
+// 2b. Passenger Text-to-Speech
+export interface TtsRequest {
+  text: string;
+  passenger: Pick<PassengerProfile, 'name' | 'persona' | 'languageStyle'>;
+  urgent?: boolean;
+}
+
+export interface TtsResponse {
+  audioBase64: string;
+  mimeType: string;
+  voiceName: string;
 }
 
 // 3. Turn Direction
@@ -112,13 +163,19 @@ export type ReactionEventType =
   | 'speed_breaker'
   | 'halfway'
   | 'slow_driving'
-  | 'wrong_turn';
+  | 'wrong_turn'
+  | 'chaos_50'
+  | 'chaos_80'
+  | 'combo_x3'
+  | 'traffic_cop';
 
 export interface RideReactionRequest {
   passenger: PassengerProfile;
   eventType: ReactionEventType;
   detail: string;
   mood: number;
+  chaos?: number;
+  combo?: number;
   speedKmh: number;
   remainingMeters: number;
   timeRemainingSeconds: number;
@@ -133,6 +190,7 @@ export interface RideEndRequest {
   rideNumber: number;
   passenger: PassengerProfile;
   completed: boolean;
+  gameOver?: boolean;
   timeElapsedSeconds: number;
   timeRemainingSeconds: number;
   crashes: number;
@@ -142,6 +200,10 @@ export interface RideEndRequest {
   avgSpeedKmh: number;
   fare: number;
   finalMood: number;
+  avgChaos?: number;
+  peakChaos?: number;
+  score?: number;
+  livesRemaining?: number;
   currentDifficulty: DifficultyConfig;
 }
 
@@ -155,6 +217,7 @@ export interface RideEndResponse {
 export type AgentTrigger =
   | 'ride_start'
   | 'bargain'
+  | 'voice_bargain'
   | 'turn'
   | 'crash'
   | 'near_miss'
@@ -163,6 +226,10 @@ export type AgentTrigger =
   | 'halfway'
   | 'slow_driving'
   | 'wrong_turn'
+  | 'chaos_50'
+  | 'chaos_80'
+  | 'combo_x3'
+  | 'traffic_cop'
   | 'ride_end';
 
 export interface AgentLogEntry {

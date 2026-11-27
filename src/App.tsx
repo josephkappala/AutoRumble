@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Terminal } from 'lucide-react';
 import { AgentLogPanel } from './components/AgentLogPanel';
+import { ApiKeyModal } from './components/ApiKeyModal';
 import { BargainModal } from './components/BargainModal';
 import { HudOverlay } from './components/HudOverlay';
 import { PauseModal } from './components/PauseModal';
@@ -13,6 +14,7 @@ import {
   type RideCompletionPayload,
 } from './game/engine';
 import { INITIAL_DIFFICULTY, normalizeDifficulty } from './game/rules';
+import { passengerVoice } from './services/passengerVoice';
 import { rideDirectorClient } from './services/rideDirectorClient';
 import type {
   AgentLogEntry,
@@ -33,10 +35,20 @@ const DEFAULT_HUD: HudTelemetry = {
   speedKmh: 72,
   crashes: 0,
   nearMisses: 0,
+  score: 0,
+  combo: 1,
+  highScore: 0,
+  lives: 5,
+  maxLives: 5,
+  chaos: 12,
+  trafficDensity: 4,
+  steeringLean: 0,
   upcomingTurn: null,
   turnMarkers: [],
   weather: 'sunny',
   currentLane: 1,
+  currentRoadName: null,
+  activeHotspot: null,
 };
 
 export default function App() {
@@ -62,6 +74,9 @@ export default function App() {
   // HUD telemetry (updated ~15Hz by engine)
   const [hud, setHud] = useState<HudTelemetry>(DEFAULT_HUD);
   const [muted, setMuted] = useState(false);
+  const [vfxEnabled, setVfxEnabled] = useState(true);
+  const [runScore, setRunScore] = useState(0);
+  const [runLives, setRunLives] = useState(5);
 
   // End-of-ride summary state
   const [rideStats, setRideStats] = useState<RideCompletionPayload | null>(null);
@@ -73,6 +88,11 @@ export default function App() {
   // Collapsible Ride Director Log
   const [logOpen, setLogOpen] = useState(false);
   const [logEntries, setLogEntries] = useState<AgentLogEntry[]>([]);
+
+  // Gemini API Key setup modal (disabled in production)
+  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
+  const [canConfigureApiKey, setCanConfigureApiKey] = useState(!import.meta.env.PROD);
+  const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false);
 
   // Refs for latest values inside stable engine callbacks
   const rideNumberRef = useRef(rideNumber);
@@ -122,6 +142,7 @@ export default function App() {
           rideNumber: completedRideNum,
           passenger: rideData.passenger,
           completed: stats.completed,
+          gameOver: stats.gameOver,
           timeElapsedSeconds: stats.timeElapsedSeconds,
           timeRemainingSeconds: stats.timeRemainingSeconds,
           crashes: stats.crashes,
@@ -131,6 +152,10 @@ export default function App() {
           avgSpeedKmh: stats.avgSpeedKmh,
           fare: stats.fare,
           finalMood: stats.finalMood,
+          avgChaos: stats.avgChaos,
+          peakChaos: stats.peakChaos,
+          score: stats.score,
+          livesRemaining: stats.livesRemaining,
           currentDifficulty: currentDiff,
         });
 
@@ -176,6 +201,8 @@ export default function App() {
         setRideSummary(null);
         setSummaryError(null);
         setTotalEarnings((prev) => prev + stats.fare);
+        setRunScore(stats.score);
+        setRunLives(stats.livesRemaining);
         setPhase('summary');
 
         const currentRide = activeRideRef.current;
@@ -225,6 +252,7 @@ export default function App() {
         setActiveRide(res);
         setAgreedFare(Math.max(40, Math.round(res.passenger.fareOffer)));
         setPhase('bargaining');
+        void passengerVoice.speak(res.passenger.openingLine, res.passenger);
       } catch (err) {
         const msg =
           err instanceof Error ? err.message : 'Failed to start ride via Gemini.';
@@ -245,8 +273,12 @@ export default function App() {
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
+    if (canConfigureApiKey && hasApiKey === false) {
+      setApiKeyModalOpen(true);
+      return;
+    }
     dispatchNewRide(1, INITIAL_DIFFICULTY, null, false);
-  }, [dispatchNewRide]);
+  }, [dispatchNewRide, canConfigureApiKey, hasApiKey]);
 
   // Support ?autostart=1 for immediate start
   useEffect(() => {
@@ -272,6 +304,7 @@ export default function App() {
       if (Number.isFinite(reply.acceptedFare) && reply.acceptedFare > 0) {
         setAgreedFare(Math.round(reply.acceptedFare));
       }
+      void passengerVoice.speak(reply.reply, activeRide.passenger);
     } catch (err) {
       setBargainError(
         err instanceof Error
@@ -283,19 +316,53 @@ export default function App() {
     }
   }, [activeRide, agreedFare, bargaining, rideNumber]);
 
+  // Handle spoken fare counter-offer via Gemini audio understanding + TTS reply
+  const handleVoiceBargain = useCallback(
+    async (audioBase64: string, mimeType: string) => {
+      if (!activeRide || bargaining) return;
+      setBargaining(true);
+      setBargainError(null);
+      try {
+        const reply = await rideDirectorClient.bargainByVoice({
+          passenger: activeRide.passenger,
+          currentFare: agreedFare,
+          rideNumber,
+          audioBase64,
+          mimeType,
+        });
+        setBargainReply(reply);
+        if (Number.isFinite(reply.acceptedFare) && reply.acceptedFare > 0) {
+          setAgreedFare(Math.round(reply.acceptedFare));
+        }
+        void passengerVoice.speak(reply.reply, activeRide.passenger);
+      } catch (err) {
+        setBargainError(
+          err instanceof Error
+            ? err.message
+            : 'Voice negotiation failed. You can still use Accept or Counter +20.'
+        );
+      } finally {
+        setBargaining(false);
+      }
+    },
+    [activeRide, agreedFare, bargaining, rideNumber]
+  );
+
   const handleStartDriving = useCallback(() => {
     if (!activeRide || !engineRef.current) return;
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
+    passengerVoice.stop();
     setPhase('playing');
     engineRef.current.startRide(
       activeRide.passenger,
       activeRide.route,
       agreedFare,
-      difficulty.timerSeconds
+      difficulty.timerSeconds,
+      { initialScore: runScore, initialLives: runLives }
     );
-  }, [activeRide, agreedFare, difficulty.timerSeconds]);
+  }, [activeRide, agreedFare, difficulty.timerSeconds, runScore, runLives]);
 
   const handlePauseToggle = useCallback(() => {
     if (phase === 'playing') {
@@ -314,9 +381,10 @@ export default function App() {
       activeRide.passenger,
       activeRide.route,
       agreedFare,
-      difficulty.timerSeconds
+      difficulty.timerSeconds,
+      { initialScore: runScore, initialLives: runLives }
     );
-  }, [activeRide, agreedFare, difficulty.timerSeconds]);
+  }, [activeRide, agreedFare, difficulty.timerSeconds, runScore, runLives]);
 
   const handleReturnTitle = useCallback(() => {
     engineRef.current?.setAmbientMode();
@@ -328,20 +396,69 @@ export default function App() {
   }, []);
 
   const handleNextRide = useCallback(() => {
+    if (rideStats?.gameOver) {
+      setRunScore(0);
+      setRunLives(5);
+      setTotalEarnings(0);
+      setDifficulty(INITIAL_DIFFICULTY);
+      setPreviousStats(null);
+      dispatchNewRide(1, INITIAL_DIFFICULTY, null, true);
+      return;
+    }
     dispatchNewRide(rideNumber + 1, difficulty, previousStats, true);
-  }, [dispatchNewRide, rideNumber, difficulty, previousStats]);
+  }, [dispatchNewRide, rideNumber, difficulty, previousStats, rideStats]);
 
   const handleToggleMute = useCallback(() => {
     setMuted((prev) => {
       const next = !prev;
       rickshawAudio.setMuted(next);
+      passengerVoice.setMuted(next);
       return next;
     });
+  }, []);
+
+  const handleToggleVfx = useCallback(() => {
+    setVfxEnabled((prev) => {
+      const next = !prev;
+      engineRef.current?.setVfxEnabled(next);
+      return next;
+    });
+  }, []);
+
+  // Check whether server has a configured Gemini API key on mount
+  useEffect(() => {
+    let active = true;
+    rideDirectorClient
+      .getHealth()
+      .then((health) => {
+        if (!active) return;
+        const allowConfigure = !import.meta.env.PROD && health.canConfigureApiKey !== false;
+        setCanConfigureApiKey(allowConfigure);
+        setHasApiKey(health.hasApiKey);
+        if (allowConfigure && !health.hasApiKey) {
+          setApiKeyModalOpen(true);
+        }
+      })
+      .catch(() => {
+        // Ignore transient startup checks
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSaveApiKey = useCallback(async (apiKey: string) => {
+    const res = await rideDirectorClient.saveApiKey(apiKey);
+    setHasApiKey(res.hasApiKey);
+    setStartError(null);
   }, []);
 
   // Global keyboard shortcuts (Title Enter/Space, Pause P/Esc, Mute M)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (apiKeyModalOpen) {
+        return;
+      }
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
         return;
       }
@@ -353,11 +470,13 @@ export default function App() {
         handlePauseToggle();
       } else if (e.key === 'm' || e.key === 'M') {
         handleToggleMute();
+      } else if (e.key === 'e' || e.key === 'E') {
+        handleToggleVfx();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [phase, handleStartFromTitle, handlePauseToggle, handleToggleMute]);
+  }, [apiKeyModalOpen, phase, handleStartFromTitle, handlePauseToggle, handleToggleMute, handleToggleVfx]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-950">
@@ -366,7 +485,17 @@ export default function App() {
         <canvas
           ref={canvasRef}
           data-testid="rickshaw-canvas"
-          className="block h-full w-full"
+          onPointerDown={(e) => {
+            if (phase !== 'playing') return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const relX = e.clientX - rect.left;
+            if (relX < rect.width * 0.5) {
+              engineRef.current?.steerLeft();
+            } else {
+              engineRef.current?.steerRight();
+            }
+          }}
+          className="block h-full w-full touch-none"
         />
 
         {/* Floating Ride Director Log button during Bargaining / Summary when closed */}
@@ -394,8 +523,13 @@ export default function App() {
             error={startError}
             logCount={logEntries.length}
             logOpen={logOpen}
+            hasApiKey={hasApiKey}
+            canConfigureApiKey={canConfigureApiKey}
             onStartRide={handleStartFromTitle}
             onToggleLog={() => setLogOpen((v) => !v)}
+            onOpenApiKeyModal={() => {
+              if (canConfigureApiKey) setApiKeyModalOpen(true);
+            }}
           />
         )}
 
@@ -409,8 +543,17 @@ export default function App() {
             bargainReply={bargainReply}
             bargaining={bargaining}
             bargainError={bargainError}
+            muted={muted}
+            onToggleMute={handleToggleMute}
+            onReplayOpening={() =>
+              void passengerVoice.speak(
+                activeRide.passenger.openingLine,
+                activeRide.passenger
+              )
+            }
             onAccept={handleStartDriving}
             onCounter={handleCounterFare}
+            onVoiceBargain={handleVoiceBargain}
           />
         )}
 
@@ -422,9 +565,11 @@ export default function App() {
             destination={activeRide.passenger.destination}
             hud={hud}
             muted={muted}
+            vfxEnabled={vfxEnabled}
             logOpen={logOpen}
             logCount={logEntries.length}
             onToggleMute={handleToggleMute}
+            onToggleVfx={handleToggleVfx}
             onPause={handlePauseToggle}
             onToggleLog={() => setLogOpen((v) => !v)}
             onSteerLeft={() => engineRef.current?.steerLeft()}
@@ -473,6 +618,16 @@ export default function App() {
         onClose={() => setLogOpen(false)}
         onClear={() => setLogEntries([])}
       />
+
+      {/* Gemini API Key Popup Modal (development only; disabled in production) */}
+      {canConfigureApiKey && (
+        <ApiKeyModal
+          open={apiKeyModalOpen}
+          hasApiKey={Boolean(hasApiKey)}
+          onClose={() => setApiKeyModalOpen(false)}
+          onSave={handleSaveApiKey}
+        />
+      )}
     </div>
   );
 }

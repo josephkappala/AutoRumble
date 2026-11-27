@@ -3,6 +3,7 @@ import type {
   ObstacleType,
   RouteEvent,
   RoutePlan,
+  RouteSegment,
   TurnPoint,
   WeatherType,
 } from '../types/rideDirector';
@@ -40,12 +41,23 @@ const OBSTACLE_SPECS: Record<ObstacleType, ObstacleSpec> = {
   },
   bus: {
     type: 'bus',
-    label: 'BMTC bus',
-    halfLengthMeters: 5.4,
-    widthFraction: 0.78,
-    speedMps: 5.2,
+    label: 'red BMTC bus',
+    halfLengthMeters: 5.8,
+    widthFraction: 0.8,
+    speedMps: 4.4,
     moodPenalty: 18,
     timePenaltySec: 4,
+    severity: 'heavy',
+    countsAsCrash: true,
+  },
+  auto: {
+    type: 'auto',
+    label: 'other auto-rickshaw',
+    halfLengthMeters: 2.6,
+    widthFraction: 0.52,
+    speedMps: 7.0,
+    moodPenalty: 13,
+    timePenaltySec: 2.5,
     severity: 'heavy',
     countsAsCrash: true,
   },
@@ -57,6 +69,17 @@ const OBSTACLE_SPECS: Record<ObstacleType, ObstacleSpec> = {
     speedMps: 9.2,
     moodPenalty: 11,
     timePenaltySec: 2,
+    severity: 'heavy',
+    countsAsCrash: true,
+  },
+  pedestrian: {
+    type: 'pedestrian',
+    label: 'crossing pedestrian',
+    halfLengthMeters: 1.4,
+    widthFraction: 0.36,
+    speedMps: 0.2,
+    moodPenalty: 20,
+    timePenaltySec: 4,
     severity: 'heavy',
     countsAsCrash: true,
   },
@@ -101,6 +124,17 @@ const OBSTACLE_SPECS: Record<ObstacleType, ObstacleSpec> = {
     speedMps: 1.4,
     moodPenalty: 15,
     timePenaltySec: 4,
+    severity: 'heavy',
+    countsAsCrash: true,
+  },
+  traffic_cop: {
+    type: 'traffic_cop',
+    label: 'Bengaluru traffic cop',
+    halfLengthMeters: 2.2,
+    widthFraction: 0.56,
+    speedMps: 0,
+    moodPenalty: 18,
+    timePenaltySec: 5,
     severity: 'heavy',
     countsAsCrash: true,
   },
@@ -164,19 +198,31 @@ export function sanitizeRoutePlan(raw: RoutePlan): RoutePlan {
   // Sanitize turn points: keep 2-3 evenly spaced inside safe driving window
   const rawTurns = Array.isArray(raw.turnPoints) ? raw.turnPoints : [];
   const sortedTurns: TurnPoint[] = rawTurns
-    .map((tp, idx) => ({
-      atMeters: Math.round(
-        clamp(
-          Number.isFinite(tp.atMeters)
-            ? tp.atMeters
-            : Math.round(lengthMeters * ((idx + 1) / (rawTurns.length + 1))),
-          230,
-          lengthMeters - 100
-        )
-      ),
-      correctLane: clampLane(tp.correctLane),
-      landmark: String(tp.landmark || landmarks[idx % landmarks.length]).trim(),
-    }))
+    .map((tp, idx) => {
+      const correctLane = clampLane(tp.correctLane);
+      const direction: 'left' | 'straight' | 'right' =
+        tp.direction === 'left' || tp.direction === 'straight' || tp.direction === 'right'
+          ? tp.direction
+          : correctLane === 0
+            ? 'left'
+            : correctLane === 2
+              ? 'right'
+              : 'straight';
+      return {
+        atMeters: Math.round(
+          clamp(
+            Number.isFinite(tp.atMeters)
+              ? tp.atMeters
+              : Math.round(lengthMeters * ((idx + 1) / (rawTurns.length + 1))),
+            230,
+            lengthMeters - 100
+          )
+        ),
+        correctLane,
+        direction,
+        landmark: String(tp.landmark || landmarks[idx % landmarks.length]).trim(),
+      };
+    })
     .sort((a, b) => a.atMeters - b.atMeters)
     .slice(0, 3);
 
@@ -233,6 +279,39 @@ export function sanitizeRoutePlan(raw: RoutePlan): RoutePlan {
     safeEvents.push(ev);
   }
 
+  // Normalize road segments so startMeters..endMeters span [0, lengthMeters]
+  let segments: RouteSegment[] | undefined;
+  if (Array.isArray(raw.segments) && raw.segments.length > 0) {
+    const cleaned = raw.segments
+      .map((seg) => ({
+        roadName: String(seg.roadName || '').trim(),
+        lengthMeters: Math.max(50, Number(seg.lengthMeters) || 200),
+        landmarks: Array.isArray(seg.landmarks)
+          ? seg.landmarks.map((l) => String(l).trim()).filter(Boolean)
+          : [],
+        hotspot: seg.hotspot ?? null,
+      }))
+      .filter((seg) => seg.roadName.length > 0);
+
+    if (cleaned.length > 0) {
+      const totalSegLen = cleaned.reduce((sum, s) => sum + s.lengthMeters, 0) || 1;
+      let cursor = 0;
+      segments = cleaned.map((seg, idx) => {
+        const startMeters = Math.round(cursor);
+        const scaledLen =
+          idx === cleaned.length - 1
+            ? Math.max(40, lengthMeters - startMeters)
+            : Math.max(60, Math.round((seg.lengthMeters / totalSegLen) * lengthMeters));
+        cursor = Math.min(lengthMeters, startMeters + scaledLen);
+        return {
+          ...seg,
+          startMeters,
+          endMeters: idx === cleaned.length - 1 ? lengthMeters : Math.round(cursor),
+        };
+      });
+    }
+  }
+
   return {
     landmarks,
     lengthMeters,
@@ -240,6 +319,11 @@ export function sanitizeRoutePlan(raw: RoutePlan): RoutePlan {
     trafficDensity,
     events: safeEvents,
     turnPoints: spacedTurns,
+    segments,
+    mapsGrounded: raw.mapsGrounded,
+    mapsError: raw.mapsError ?? null,
+    todayHotspots: raw.todayHotspots,
+    mapsSources: raw.mapsSources,
   };
 }
 

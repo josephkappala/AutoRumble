@@ -9,8 +9,12 @@ import type {
   RideReactionResponse,
   RideStartRequest,
   RideStartResponse,
+  TtsRequest,
+  TtsResponse,
   TurnDirectionRequest,
   TurnDirectionResponse,
+  VoiceBargainRequest,
+  VoiceBargainResponse,
 } from '../types/rideDirector';
 
 type LogListener = (entry: AgentLogEntry) => void;
@@ -117,6 +121,26 @@ class RideDirectorClient {
     return this.post('/api/ride-director/bargain', 'bargain', summary, req);
   }
 
+  bargainByVoice(req: VoiceBargainRequest): Promise<VoiceBargainResponse> {
+    const approxKb = Math.max(1, Math.round((req.audioBase64.length * 3) / 4 / 1024));
+    const summary = `${req.passenger.name} (${req.passenger.languageStyle}) · voice clip (~${approxKb} KB) vs ₹${req.currentFare}`;
+    return this.post('/api/ride-director/voice-bargain', 'voice_bargain', summary, req);
+  }
+
+  async synthesizeSpeech(req: TtsRequest, signal?: AbortSignal): Promise<TtsResponse> {
+    const response = await fetch('/api/ride-director/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+      signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.error || !payload.data) {
+      throw new Error(payload.error || `TTS failed (HTTP ${response.status})`);
+    }
+    return payload.data as TtsResponse;
+  }
+
   getTurnDirection(
     req: TurnDirectionRequest,
     prefetched = false
@@ -137,7 +161,8 @@ class RideDirectorClient {
     req: RideReactionRequest,
     prefetched = false
   ): Promise<RideReactionResponse> {
-    const summary = `${req.detail} · mood ${Math.round(req.mood)} · ${Math.round(req.speedKmh)} km/h`;
+    const chaosPart = typeof req.chaos === 'number' ? ` · chaos ${Math.round(req.chaos)}%` : '';
+    const summary = `${req.detail} · mood ${Math.round(req.mood)}${chaosPart} · ${Math.round(req.speedKmh)} km/h`;
     return this.post(
       '/api/ride-director/reaction',
       req.eventType,
@@ -150,6 +175,32 @@ class RideDirectorClient {
   finishRide(req: RideEndRequest): Promise<RideEndResponse> {
     const summary = `Ride #${req.rideNumber} ${req.completed ? 'completed' : 'timed out'} · ${req.crashes} crashes · ₹${req.fare}`;
     return this.post('/api/ride-director/end', 'ride_end', summary, req);
+  }
+
+  async getHealth(): Promise<{
+    ok: boolean;
+    model: string;
+    hasApiKey: boolean;
+    canConfigureApiKey?: boolean;
+  }> {
+    const response = await fetch('/api/health');
+    if (!response.ok) {
+      throw new Error(`Health check failed (HTTP ${response.status})`);
+    }
+    return response.json();
+  }
+
+  async saveApiKey(apiKey: string): Promise<{ ok: boolean; hasApiKey: boolean }> {
+    const response = await fetch('/api/settings/api-key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.error) {
+      throw new Error(payload.error || `Failed to save API key (HTTP ${response.status})`);
+    }
+    return payload;
   }
 }
 
