@@ -1,0 +1,8 @@
+{
+  "name": "Rickshaw Rumble",
+  "description": "Drive an auto-rickshaw through real-time Bengaluru traffic. A Gemini-powered Ride Director agent creates every passenger, route, fare bargain and ride story live with voice bargaining, AI portraits and today's real city events.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
