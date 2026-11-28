@@ -5,6 +5,7 @@ import type {
   TurnPoint,
 } from '../types/rideDirector';
 import { rideDirectorClient } from '../services/rideDirectorClient';
+import { geminiLiveClient } from '../services/geminiLiveClient';
 import { passengerVoice } from '../services/passengerVoice';
 import { rickshawAudio } from './audio';
 import {
@@ -532,6 +533,18 @@ export class RickshawGameEngine {
       .catch(() => {});
   }
 
+  showLiveTranscript(text: string, urgent = false) {
+    if (!this.passenger || !text.trim()) return;
+    this.speechToken++;
+    this.speechBubble = {
+      speaker: `${this.passenger.name} · LIVE`,
+      text: text.trim(),
+      loading: false,
+      urgent,
+      remainingSec: 4.8,
+    };
+  }
+
   private showSpeech(text: string, urgent: boolean, durationSec = 4.2) {
     if (!this.passenger) return;
     this.speechToken++;
@@ -542,7 +555,9 @@ export class RickshawGameEngine {
       urgent,
       remainingSec: durationSec,
     };
-    void passengerVoice.speak(text, this.passenger, { urgent });
+    if (!geminiLiveClient.isActive()) {
+      void passengerVoice.speak(text, this.passenger, { urgent });
+    }
   }
 
   private triggerLiveReaction(
@@ -562,6 +577,15 @@ export class RickshawGameEngine {
       return;
     }
     this.lastReactionAtSec = this.timeSec;
+
+    // When Gemini Live is active, stream the game event directly to the Live backseat passenger
+    if (geminiLiveClient.isActive()) {
+      geminiLiveClient.sendGameEvent(
+        `[${eventType.toUpperCase()}] ${detail} (Chaos ${Math.round(this.chaos)}%, Mood ${Math.round(this.mood)}/100, Speed ${mpsToKmh(this.playerSpeedMps)} km/h)`
+      );
+      return;
+    }
+
     const sessionId = this.rideSessionId;
     const token = ++this.speechToken;
 
@@ -833,7 +857,20 @@ export class RickshawGameEngine {
 
       if (!tp.announced && dist <= 165 && dist > 15) {
         tp.announced = true;
-        if (tp.prefetchedDirection) {
+        if (geminiLiveClient.isActive()) {
+          const dirLabel =
+            tp.correctLane === 0
+              ? 'LEFT'
+              : tp.correctLane === 1
+                ? 'STRAIGHT (MIDDLE)'
+                : 'RIGHT';
+          geminiLiveClient.sendGameEvent(
+            `[TURN] Approaching ${tp.landmark} in ${Math.round(dist)}m. Tell the driver right now in 1 urgent short sentence to take the ${dirLabel} lane at ${tp.landmark}!`
+          );
+          if (tp.prefetchedDirection) {
+            this.showLiveTranscript(tp.prefetchedDirection, true);
+          }
+        } else if (tp.prefetchedDirection) {
           this.showSpeech(tp.prefetchedDirection, true, 5.2);
         } else {
           // Non-blocking fallback while prefetch settles

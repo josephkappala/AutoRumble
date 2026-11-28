@@ -8,11 +8,13 @@ import {
   MessageSquare,
   Mic,
   MicOff,
+  Radio,
   RotateCcw,
   AlertTriangle,
   Volume2,
   VolumeX,
 } from 'lucide-react';
+import type { LiveConnectionState } from '../services/geminiLiveClient';
 import type {
   BargainResponse,
   PassengerProfile,
@@ -28,6 +30,11 @@ interface BargainModalProps {
   bargaining: boolean;
   bargainError: string | null;
   muted: boolean;
+  liveState: LiveConnectionState;
+  liveInputTranscript: string;
+  liveOutputTranscript: string;
+  liveError: string | null;
+  onToggleLive: () => void;
   onToggleMute: () => void;
   onReplayOpening: () => void;
   onAccept: () => void;
@@ -73,6 +80,11 @@ export const BargainModal: React.FC<BargainModalProps> = ({
   bargaining,
   bargainError,
   muted,
+  liveState,
+  liveInputTranscript,
+  liveOutputTranscript,
+  liveError,
+  onToggleLive,
   onToggleMute,
   onReplayOpening,
   onAccept,
@@ -80,6 +92,8 @@ export const BargainModal: React.FC<BargainModalProps> = ({
   onVoiceBargain,
 }) => {
   const hasCountered = bargainReply !== null;
+  const isLive = liveState === 'live';
+  const isLiveConnecting = liveState === 'connecting';
   const counterTarget = currentFare + 20;
   const englishOpening =
     (passenger.openingLineEnglish || '').trim() || passenger.openingLine;
@@ -340,72 +354,78 @@ export const BargainModal: React.FC<BargainModalProps> = ({
             </p>
           </motion.div>
 
-          {/* Large Voice Bargain Mic Button */}
-          <div className="flex flex-col items-center rounded-xl border-2 border-dashed border-slate-300 bg-amber-50/50 px-4 py-3.5">
+          {/* Single Gemini Live Voice Button */}
+          <div className="flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-amber-50/50 px-4 py-3.5">
             <button
               type="button"
-              disabled={bargaining || micDenied}
-              onPointerDown={(e) => {
-                e.preventDefault();
-                startRecording();
-              }}
-              onPointerUp={(e) => {
-                e.preventDefault();
-                stopRecording();
-              }}
-              aria-pressed={recording}
-              aria-label="Hold to bargain with your voice"
-              className={`inline-flex w-full items-center justify-center gap-3 rounded-xl border-2 border-slate-900 px-5 py-3.5 text-base font-extrabold shadow-[4px_4px_0px_#0f172a] transition-all select-none touch-none ${
-                micDenied
-                  ? 'bg-slate-200 text-slate-500 shadow-none cursor-not-allowed'
-                  : recording
-                    ? 'bg-red-500 text-white translate-y-0.5 shadow-[2px_2px_0px_#0f172a] ring-4 ring-red-300/80 cursor-pointer'
-                    : bargaining
-                      ? 'bg-amber-200 text-slate-800 cursor-wait opacity-80'
-                      : 'bg-amber-400 text-slate-950 hover:-translate-y-0.5 hover:bg-amber-300 active:translate-y-0 cursor-pointer'
+              disabled={bargaining}
+              onClick={onToggleLive}
+              className={`inline-flex w-full items-center justify-center gap-2.5 rounded-xl border-2 border-slate-900 px-5 py-3.5 text-sm sm:text-base font-extrabold shadow-[4px_4px_0px_#0f172a] transition-all cursor-pointer ${
+                isLive
+                  ? 'bg-emerald-600 text-white ring-4 ring-emerald-300/80 hover:bg-emerald-500'
+                  : isLiveConnecting
+                    ? 'bg-emerald-200 text-slate-900 cursor-wait'
+                    : 'bg-amber-400 text-slate-950 hover:-translate-y-0.5 hover:bg-amber-300 active:translate-y-0'
               }`}
             >
-              {micDenied ? (
+              {isLive ? (
                 <>
-                  <MicOff className="h-5 w-5" aria-hidden="true" />
-                  <span>Mic Unavailable</span>
-                </>
-              ) : recording ? (
-                <>
-                  <span className="relative flex h-3.5 w-3.5">
+                  <span className="relative flex h-3 w-3">
                     <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white opacity-80" />
-                    <span className="relative inline-flex h-3.5 w-3.5 rounded-full bg-white" />
+                    <span className="relative inline-flex h-3 w-3 rounded-full bg-white" />
                   </span>
-                  <Mic className="h-5 w-5" aria-hidden="true" />
-                  <span>Listening ({elapsedSec}s)… Release to send</span>
+                  <Radio className="h-5 w-5" aria-hidden="true" />
+                  <span>Gemini Live ON · Speak naturally (Stop)</span>
                 </>
-              ) : bargaining ? (
+              ) : isLiveConnecting ? (
                 <>
-                  <RotateCcw className="h-5 w-5 animate-spin" aria-hidden="true" />
-                  <span>{passenger.name} is thinking…</span>
+                  <RotateCcw className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  <span>Connecting Gemini Live…</span>
                 </>
               ) : (
                 <>
-                  <Mic className="h-5 w-5" aria-hidden="true" />
-                  <span>Hold to bargain</span>
+                  <Radio className="h-5 w-5" aria-hidden="true" />
+                  <span>Talk Live (Gemini Live)</span>
                 </>
               )}
             </button>
 
-            {bargainReply?.heardText ? (
-              <p className="mt-2.5 text-center text-sm font-semibold text-slate-800">
-                <span className="text-slate-500">You said:</span> “{bargainReply.heardText}”
+            {liveInputTranscript ? (
+              <p className="text-center text-sm font-semibold text-slate-800">
+                <span className="text-emerald-700">You (Live):</span> “{liveInputTranscript}”
               </p>
-            ) : micHint ? (
-              <p className="mt-2 text-center text-xs font-semibold text-amber-900">
-                {micHint}
+            ) : liveError ? (
+              <p className="text-center text-xs font-semibold text-red-700">
+                {liveError}
               </p>
             ) : (
-              <p className="mt-2 text-center text-xs font-medium text-slate-500">
-                Hold &amp; speak a counter-offer — e.g. “Anna, ₹{counterTarget} OK?”
+              <p className="text-center text-xs font-medium text-slate-500">
+                {isLive
+                  ? `Speak freely in English or Kannada — stays live while driving!`
+                  : `Click to talk live with ${passenger.name} — e.g. “Anna, ₹${counterTarget} OK?”`}
               </p>
             )}
           </div>
+
+          {/* Live Streaming Passenger Speech Bubble (always shown when Gemini Live speaks) */}
+          {liveOutputTranscript && !bargainReply && (
+            <div className="relative rounded-2xl border-2 border-slate-900 bg-emerald-50 p-3.5 shadow-[3px_3px_0px_#0f172a]">
+              <span
+                aria-hidden="true"
+                className="absolute -top-2 left-6 h-3.5 w-3.5 rotate-45 border-l-2 border-t-2 border-slate-900 bg-emerald-50"
+              />
+              <div className="flex items-center justify-between text-xs font-bold text-emerald-900">
+                <span className="inline-flex items-center gap-1.5">
+                  <Radio className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                  <span>{passenger.name} (Gemini Live)</span>
+                </span>
+                <span className="text-emerald-700">Live Audio</span>
+              </div>
+              <p className="mt-1.5 text-base font-semibold leading-snug text-slate-900">
+                “{liveOutputTranscript}”
+              </p>
+            </div>
+          )}
 
           {/* Passenger Reply Speech Bubble */}
           {bargainReply && (

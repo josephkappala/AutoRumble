@@ -7,6 +7,7 @@ import {
   Flame,
   Heart,
   Pause,
+  Radio,
   Sparkles,
   Terminal,
   Trophy,
@@ -14,6 +15,7 @@ import {
   VolumeX,
 } from 'lucide-react';
 import type { HudTelemetry } from '../game/engine';
+import type { LiveConnectionState } from '../services/geminiLiveClient';
 
 interface HudOverlayProps {
   rideNumber: number;
@@ -22,8 +24,10 @@ interface HudOverlayProps {
   hud: HudTelemetry;
   muted: boolean;
   vfxEnabled: boolean;
+  liveState: LiveConnectionState;
   logOpen: boolean;
   logCount: number;
+  onToggleLive: () => void;
   onToggleMute: () => void;
   onToggleVfx: () => void;
   onPause: () => void;
@@ -43,8 +47,10 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
   hud,
   muted,
   vfxEnabled,
+  liveState,
   logOpen,
   logCount,
+  onToggleLive,
   onToggleMute,
   onToggleVfx,
   onPause,
@@ -200,9 +206,35 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
           )}
         </div>
 
-        {/* Top-Right: Utility Controls (VFX E, Voice M, Pause P, Log) & Distance */}
+        {/* Top-Right: Utility Controls (Gemini Live, VFX E, Voice M, Pause P, Log) & Distance */}
         <div className="flex flex-col items-end gap-2">
           <div className="pointer-events-auto flex items-center gap-1.5">
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={(e) => {
+                e.currentTarget.blur();
+                onToggleLive();
+              }}
+              aria-pressed={liveState === 'live'}
+              aria-label={liveState === 'live' ? 'Stop Gemini Live passenger' : 'Start Gemini Live passenger'}
+              title={liveState === 'live' ? 'Gemini Live ON — click to stop' : 'Talk with passenger via Gemini Live'}
+              className={`inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border-2 border-slate-900 px-2.5 text-xs font-extrabold shadow-[2px_2px_0px_#0f172a] cursor-pointer ${
+                liveState === 'live'
+                  ? 'bg-emerald-600 text-white hover:bg-emerald-500'
+                  : liveState === 'connecting'
+                    ? 'bg-emerald-200 text-slate-900'
+                    : 'bg-white text-slate-900 hover:bg-emerald-50'
+              }`}
+            >
+              {liveState === 'live' ? (
+                <span className="h-2 w-2 rounded-full bg-white animate-pulse" aria-hidden="true" />
+              ) : (
+                <Radio className="h-3.5 w-3.5 text-emerald-700" aria-hidden="true" />
+              )}
+              <span>{liveState === 'live' ? 'LIVE' : liveState === 'connecting' ? '…' : 'Live'}</span>
+            </button>
+
             <button
               type="button"
               tabIndex={-1}

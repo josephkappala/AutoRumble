@@ -1,7 +1,9 @@
 import express from 'express';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { attachGeminiLiveServer } from './server/liveBridge.ts';
 import {
   generateBargainReply,
   generatePassengerSpeech,
@@ -181,7 +183,10 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = http.createServer(app);
+  attachGeminiLiveServer(httpServer);
+
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Rickshaw Rumble server listening on http://localhost:${PORT}`);
   });
 }

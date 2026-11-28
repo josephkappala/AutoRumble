@@ -820,7 +820,7 @@ Rules:
   };
 }
 
-function selectVoiceForPassenger(
+export function selectVoiceForPassenger(
   passenger: Pick<PassengerProfile, 'name' | 'persona' | 'languageStyle'>
 ): string {
   const combined = `${passenger.name} ${passenger.persona}`.toLowerCase();

@@ -14,6 +14,10 @@ import {
   type RideCompletionPayload,
 } from './game/engine';
 import { INITIAL_DIFFICULTY, normalizeDifficulty } from './game/rules';
+import {
+  geminiLiveClient,
+  type LiveConnectionState,
+} from './services/geminiLiveClient';
 import { passengerVoice } from './services/passengerVoice';
 import { rideDirectorClient } from './services/rideDirectorClient';
 import type {
@@ -94,7 +98,15 @@ export default function App() {
   const [canConfigureApiKey, setCanConfigureApiKey] = useState(!import.meta.env.PROD);
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false);
 
+  // Gemini Live state
+  const [liveState, setLiveState] = useState<LiveConnectionState>('idle');
+  const [liveInputTranscript, setLiveInputTranscript] = useState('');
+  const [liveOutputTranscript, setLiveOutputTranscript] = useState('');
+  const [liveError, setLiveError] = useState<string | null>(null);
+
   // Refs for latest values inside stable engine callbacks
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
   const rideNumberRef = useRef(rideNumber);
   rideNumberRef.current = rideNumber;
   const activeRideRef = useRef(activeRide);
@@ -197,6 +209,7 @@ export default function App() {
         setHud(nextHud);
       },
       onRideComplete: (stats) => {
+        geminiLiveClient.disconnect();
         setRideStats(stats);
         setRideSummary(null);
         setSummaryError(null);
@@ -235,6 +248,10 @@ export default function App() {
       setStartError(null);
       setBargainReply(null);
       setBargainError(null);
+      setLiveInputTranscript('');
+      setLiveOutputTranscript('');
+      setLiveError(null);
+      geminiLiveClient.disconnect();
       if (fromSummary) {
         setLoadingNextRide(true);
       } else {
@@ -348,12 +365,81 @@ export default function App() {
     [activeRide, agreedFare, bargaining, rideNumber]
   );
 
+  const handleToggleLive = useCallback(() => {
+    if (geminiLiveClient.isActive()) {
+      geminiLiveClient.disconnect();
+      return;
+    }
+    const ride = activeRideRef.current;
+    if (!ride) return;
+
+    passengerVoice.stop();
+    setLiveError(null);
+    setLiveInputTranscript('');
+    setLiveOutputTranscript('');
+
+    const routeSummary =
+      ride.route.segments && ride.route.segments.length > 0
+        ? ride.route.segments.map((s) => s.roadName).join(' -> ')
+        : ride.route.landmarks.slice(0, 4).join(', ');
+
+    void geminiLiveClient.connect({
+      passenger: ride.passenger,
+      currentFare: agreedFare,
+      routeSummary,
+      handlers: {
+        onStateChange: (next) => {
+          setLiveState(next);
+          if (next === 'live' && phaseRef.current === 'playing') {
+            geminiLiveClient.sendGameEvent(
+              `[RIDE_STARTED] We are already driving towards ${ride.passenger.destination}. Chat with the driver and call out turns and hazards!`
+            );
+          }
+        },
+        onInputTranscript: (text) => {
+          setLiveInputTranscript(text);
+        },
+        onOutputTranscript: (text) => {
+          setLiveOutputTranscript(text);
+          if (phaseRef.current === 'bargaining') {
+            setBargainReply((prev) => (prev ? { ...prev, reply: text } : prev));
+          } else if (phaseRef.current === 'playing') {
+            engineRef.current?.showLiveTranscript(text);
+          }
+        },
+        onFareAgreed: ({ acceptedFare, outcome }) => {
+          setAgreedFare(Math.max(40, Math.round(acceptedFare)));
+          setBargainReply((prev) => ({
+            heardText: prev?.heardText,
+            reply:
+              prev?.reply ||
+              (outcome === 'accepted'
+                ? `Done! ₹${acceptedFare} agreed.`
+                : outcome === 'halfway'
+                  ? `Okay, let's meet at ₹${acceptedFare}.`
+                  : `₹${acceptedFare} final, let's go!`),
+            acceptedFare: Math.max(40, Math.round(acceptedFare)),
+            outcome,
+          }));
+        },
+        onError: (msg) => {
+          setLiveError(msg);
+        },
+      },
+    });
+  }, [agreedFare]);
+
   const handleStartDriving = useCallback(() => {
     if (!activeRide || !engineRef.current) return;
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
     passengerVoice.stop();
+    if (geminiLiveClient.isActive()) {
+      geminiLiveClient.sendGameEvent(
+        `[RIDE_STARTED] Agreed fare is ₹${agreedFare}. We just started driving from ${activeRide.passenger.pickup} to ${activeRide.passenger.destination}!`
+      );
+    }
     setPhase('playing');
     engineRef.current.startRide(
       activeRide.passenger,
@@ -387,6 +473,7 @@ export default function App() {
   }, [activeRide, agreedFare, difficulty.timerSeconds, runScore, runLives]);
 
   const handleReturnTitle = useCallback(() => {
+    geminiLiveClient.disconnect();
     engineRef.current?.setAmbientMode();
     setActiveRide(null);
     setRideStats(null);
@@ -413,6 +500,7 @@ export default function App() {
       const next = !prev;
       rickshawAudio.setMuted(next);
       passengerVoice.setMuted(next);
+      geminiLiveClient.setMuted(next);
       return next;
     });
   }, []);
@@ -539,6 +627,11 @@ export default function App() {
             bargaining={bargaining}
             bargainError={bargainError}
             muted={muted}
+            liveState={liveState}
+            liveInputTranscript={liveInputTranscript}
+            liveOutputTranscript={liveOutputTranscript}
+            liveError={liveError}
+            onToggleLive={handleToggleLive}
             onToggleMute={handleToggleMute}
             onReplayOpening={() =>
               void passengerVoice.speak(
@@ -561,8 +654,10 @@ export default function App() {
             hud={hud}
             muted={muted}
             vfxEnabled={vfxEnabled}
+            liveState={liveState}
             logOpen={logOpen}
             logCount={logEntries.length}
+            onToggleLive={handleToggleLive}
             onToggleMute={handleToggleMute}
             onToggleVfx={handleToggleVfx}
             onPause={handlePauseToggle}
