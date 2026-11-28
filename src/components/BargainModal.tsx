@@ -374,18 +374,18 @@ export const BargainModal: React.FC<BargainModalProps> = ({
                     <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white opacity-80" />
                     <span className="relative inline-flex h-3 w-3 rounded-full bg-white" />
                   </span>
-                  <Radio className="h-5 w-5" aria-hidden="true" />
-                  <span>Gemini Live ON · Speak naturally (Stop)</span>
+                  <Mic className="h-5 w-5" aria-hidden="true" />
+                  <span>Listening… Speak to bargain (Stop)</span>
                 </>
               ) : isLiveConnecting ? (
                 <>
                   <RotateCcw className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  <span>Connecting Gemini Live…</span>
+                  <span>Connecting…</span>
                 </>
               ) : (
                 <>
-                  <Radio className="h-5 w-5" aria-hidden="true" />
-                  <span>Talk Live (Gemini Live)</span>
+                  <Mic className="h-5 w-5" aria-hidden="true" />
+                  <span>Hold to bargain</span>
                 </>
               )}
             </button>

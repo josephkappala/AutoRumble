@@ -23,7 +23,7 @@ import type {
 } from '../src/types/rideDirector.ts';
 
 const MODEL_NAME = 'gemini-3.1-flash-lite';
-const GROUNDING_MODEL = 'gemini-3.8-flash';
+const GROUNDING_MODEL = 'gemini-3.1-flash-lite';
 const TTS_MODELS = ['gemini-3.8-flash-lite-tts', 'gemini-2.5-flash-preview-tts'];
 const BENGALURU_LAT_LNG = { latitude: 12.9716, longitude: 77.5946 };
 
@@ -33,7 +33,12 @@ interface CachedHotspots {
 }
 
 let cachedHotspots: CachedHotspots | null = null;
+let hotspotsInFlight: Promise<TodayHotspot[]> | null = null;
 const HOTSPOT_CACHE_TTL_MS = 30 * 60 * 1000;
+const mapsRouteCache = new Map<
+  string,
+  { route: RawMapsRoute; sources: Array<{ title: string; uri: string }> }
+>();
 
 let cachedClient: GoogleGenAI | null = null;
 let cachedTtsClient: GoogleGenAI | null = null;
@@ -406,6 +411,12 @@ async function fetchMapsGroundedRoute(
   route: RawMapsRoute;
   sources: Array<{ title: string; uri: string }>;
 }> {
+  const cacheKey = `${pickup.toLowerCase().trim()}->${destination.toLowerCase().trim()}`;
+  const cached = mapsRouteCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const ai = getClient();
   const prompt = `Using Google Maps in Bengaluru, India, give the real driving route from "${pickup}" to "${destination}".
 Return ONLY a single raw JSON object (no markdown fences, no commentary) with this exact shape:
@@ -432,6 +443,9 @@ Rules:
           latLng: BENGALURU_LAT_LNG,
         },
       },
+      thinkingConfig: {
+        thinkingLevel: ThinkingLevel.MINIMAL,
+      },
     },
   });
 
@@ -457,49 +471,66 @@ Rules:
     }
   }
 
-  return { route: parsed, sources };
+  const result = { route: parsed, sources };
+  mapsRouteCache.set(cacheKey, result);
+  return result;
 }
 
 async function fetchTodayBengaluruHotspots(): Promise<TodayHotspot[]> {
   if (cachedHotspots && Date.now() - cachedHotspots.fetchedAt < HOTSPOT_CACHE_TTL_MS) {
     return cachedHotspots.hotspots;
   }
+  if (hotspotsInFlight) {
+    return hotspotsInFlight;
+  }
 
-  try {
-    const ai = getClient();
-    const todayIso = new Date().toISOString().slice(0, 10);
-    const prompt = `Search for today's (${todayIso}) traffic jams, roadblocks, metro construction, rain waterlogging, or major events in Bengaluru, India.
+  hotspotsInFlight = (async () => {
+    try {
+      const ai = getClient();
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const prompt = `Search for today's (${todayIso}) traffic jams, roadblocks, metro construction, rain waterlogging, or major events in Bengaluru, India.
 Return ONLY a raw JSON object (no markdown):
 { "hotspots": [{ "location": "Outer Ring Road", "reason": "Heavy IT corridor traffic & metro work" }] }
 Include 4 to 6 major Bengaluru traffic hotspots relevant today.`;
 
-    const response = await ai.models.generateContent({
-      model: GROUNDING_MODEL,
-      contents: prompt,
-      config: {
-        tools: [{ googleSearch: {} }],
-      },
-    });
+      const response = await ai.models.generateContent({
+        model: GROUNDING_MODEL,
+        contents: prompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+          thinkingConfig: {
+            thinkingLevel: ThinkingLevel.MINIMAL,
+          },
+        },
+      });
 
-    const text = (response.text ?? '').trim();
-    if (!text) return [];
-    const parsed = extractJsonObject<{ hotspots?: TodayHotspot[] }>(text);
-    const hotspots = Array.isArray(parsed.hotspots)
-      ? parsed.hotspots
-          .filter((h) => h && typeof h.location === 'string' && h.location.trim().length > 0)
-          .map((h) => ({
-            location: h.location.trim(),
-            reason: (h.reason || 'Heavy traffic').trim(),
-          }))
-          .slice(0, 6)
-      : [];
+      const text = (response.text ?? '').trim();
+      if (!text) return [];
+      const parsed = extractJsonObject<{ hotspots?: TodayHotspot[] }>(text);
+      const hotspots = Array.isArray(parsed.hotspots)
+        ? parsed.hotspots
+            .filter((h) => h && typeof h.location === 'string' && h.location.trim().length > 0)
+            .map((h) => ({
+              location: h.location.trim(),
+              reason: (h.reason || 'Heavy traffic').trim(),
+            }))
+            .slice(0, 6)
+        : [];
 
-    cachedHotspots = { fetchedAt: Date.now(), hotspots };
-    return hotspots;
-  } catch (err) {
-    console.warn('[Today in Bengaluru] Hotspot search skipped:', err instanceof Error ? err.message : err);
-    return [];
-  }
+      cachedHotspots = { fetchedAt: Date.now(), hotspots };
+      return hotspots;
+    } catch (err) {
+      console.warn(
+        '[Today in Bengaluru] Hotspot search skipped:',
+        err instanceof Error ? err.message : err
+      );
+      return cachedHotspots?.hotspots ?? [];
+    } finally {
+      hotspotsInFlight = null;
+    }
+  })();
+
+  return hotspotsInFlight;
 }
 
 function hotspotMatchesSegment(hotspotLocation: string, haystack: string): boolean {
@@ -567,11 +598,11 @@ Rules:
     RIDE_START_SCHEMA
   );
 
-  // Ground the route with Google Maps + fetch Today in Bengaluru traffic hotspots in parallel (bounded by fast timeouts so ride_start never hangs)
+  // Ground the route with fast Google Maps grounding + cached Today in Bengaluru hotspots in parallel
   const [mapsResult, hotspots] = await Promise.all([
     withTimeout(
       fetchMapsGroundedRoute(baseRide.passenger.pickup, baseRide.passenger.destination),
-      7000,
+      4500,
       'Google Maps grounding'
     )
       .then((res) => ({ ok: true as const, ...res }))
@@ -583,8 +614,8 @@ Rules:
         );
         return { ok: false as const, error: message };
       }),
-    withTimeout(fetchTodayBengaluruHotspots(), 5000, 'Today in Bengaluru hotspots').catch(
-      () => [] as TodayHotspot[]
+    withTimeout(fetchTodayBengaluruHotspots(), 3000, 'Today in Bengaluru hotspots').catch(
+      () => cachedHotspots?.hotspots ?? ([] as TodayHotspot[])
     ),
   ]);
 

@@ -260,8 +260,11 @@ class GeminiLiveClient {
       } else if (msg.type === 'audio' && typeof msg.data === 'string') {
         this.enqueueAudioChunk(msg.data);
       } else if (msg.type === 'interrupted') {
-        this.flushPlayback();
-        this.currentOutputTurn = '';
+        // Ignore self-echo interruptions while playback is actively speaking
+        if (this.scheduledSources.size === 0) {
+          this.flushPlayback();
+          this.currentOutputTurn = '';
+        }
       } else if (msg.type === 'input_transcript' && typeof msg.text === 'string') {
         this.currentInputTurn = `${this.currentInputTurn} ${msg.text}`.replace(/\s+/g, ' ').trim();
         this.handlers.onInputTranscript?.(this.currentInputTurn);
@@ -323,6 +326,11 @@ class GeminiLiveClient {
 
     processor.onaudioprocess = (e) => {
       if (this.state !== 'live' || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      // Echo gate: pause mic streaming while the passenger is speaking so laptop
+      // speakers never trigger Gemini Live barge-in and cut off the reply.
+      if (this.scheduledSources.size > 0) {
         return;
       }
       const inputData = e.inputBuffer.getChannelData(0);
