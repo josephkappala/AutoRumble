@@ -523,13 +523,8 @@ export default function App() {
             error={startError}
             logCount={logEntries.length}
             logOpen={logOpen}
-            hasApiKey={hasApiKey}
-            canConfigureApiKey={canConfigureApiKey}
             onStartRide={handleStartFromTitle}
             onToggleLog={() => setLogOpen((v) => !v)}
-            onOpenApiKeyModal={() => {
-              if (canConfigureApiKey) setApiKeyModalOpen(true);
-            }}
           />
         )}
 

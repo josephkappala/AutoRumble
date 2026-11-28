@@ -143,14 +143,14 @@ const RIDE_START_SCHEMA: Schema = {
         },
         languageStyle: {
           type: Type.STRING,
-          enum: ['English', 'Kannada-English', 'Hinglish'],
+          enum: ['English', 'Kannada-English'],
         },
         pickup: { type: Type.STRING, description: 'Bengaluru pickup locality or landmark' },
         destination: { type: Type.STRING, description: 'Bengaluru drop-off locality or landmark' },
         openingLine: {
           type: Type.STRING,
           description:
-            'Punchy 1-2 sentence opening line spoken in languageStyle (authentic Kannada-English, Hinglish, or Bengaluru English) asking for a ride and stating the fare',
+            'Punchy 1-2 sentence opening line spoken in languageStyle (natural Kannada / Kannada-English or Bengaluru English ONLY — never Hindi) asking for a ride and stating the fare',
         },
         openingLineEnglish: {
           type: Type.STRING,
@@ -544,8 +544,8 @@ export async function generateRideStart(
   const systemInstruction = `You are the Ride Director AI for "Rickshaw Rumble", a lively arcade auto-rickshaw driving game set in Bengaluru, India.
 Create vivid, authentic, witty Bengaluru passengers and playable 3-lane routes.
 Rules:
-- Vary passenger personas and languageStyle across rides ("English", "Kannada-English" with natural Kannada/Kannada-English phrases like anna/macha/guru/swalpa/banni/eshtu/hogbeku, or "Hinglish" with natural Hindi-English like bhaiya/chalo/kitna/jaldi/yaar).
-- openingLine MUST be written in the passenger's languageStyle so it sounds authentic when spoken aloud by TTS; openingLineEnglish MUST be a clear, natural English translation of openingLine.
+- Vary passenger personas and languageStyle across rides using ONLY "English" or "Kannada-English" (with natural Kannada / Kannada-English phrases like anna/macha/guru/swalpa/banni/eshtu/hogbeku). Never use Hindi or Hinglish.
+- openingLine MUST be written in the passenger's languageStyle (Kannada-English or English ONLY) so it sounds authentic when spoken aloud by TTS; openingLineEnglish MUST be a clear, natural English translation of openingLine.
 - Choose real, well-known, distinct Bengaluru pickup and destination places (e.g. Koramangala Forum Mall, Indiranagar 100ft Rd, Marathahalli Bridge, Silk Board, MG Road Metro, Domlur Flyover, HSR Layout, Electronic City, Jayanagar 4th Block, Whitefield ITPL, Hebbal Flyover, Malleswaram, Bellandur).
 - Scale fareOffer near ₹${baseFare} (±25 INR) using the current fareMultiplier (${req.currentDifficulty.fareMultiplier.toFixed(2)}x).
 - Route lengthMeters should be 750 to 1100.
@@ -767,12 +767,12 @@ export async function generateVoiceBargainReply(
 Listen carefully to the audio clip, transcribe what the driver said into heardText, and reply strictly in the passenger's persona and languageStyle.
 Rules:
 - heardText: transcribe what the driver spoke naturally (e.g. "Anna, 150 rupees, OK?"). If nothing intelligible was spoken, set heardText to "(inaudible)" and keep currentFare.
-- Understand any rupee amount or negotiation phrase spoken in English, Kannada-English, or Hinglish.
+- Understand any rupee amount or negotiation phrase spoken in English or Kannada.
 - Decide realistically based on the passenger's persona and currentFare (₹${req.currentFare}):
   - "accepted": agree to the driver's spoken fare (if reasonable, e.g. within +₹40 of currentFare or lower).
   - "halfway": meet in the middle between currentFare and the driver's ask.
   - "refused": stick firmly to currentFare (₹${req.currentFare}) if the driver asks for something outrageous or didn't state a clear fare.
-- Keep reply punchy, witty, authentic Bengaluru banter (max 22 words).
+- Keep reply punchy, witty, authentic Bengaluru banter in Kannada-English or English ONLY (never Hindi/Hinglish, max 22 words).
 - Return strictly valid JSON matching the schema.`;
 
   const contextPrompt = JSON.stringify({
@@ -893,17 +893,14 @@ export async function generatePassengerSpeech(
 
   const ai = getTtsClient();
   const voiceName = selectVoiceForPassenger(req.passenger);
-  const delivery = req.urgent
-    ? 'urgent, animated, expressive'
-    : 'lively, natural, conversational';
-  const prompt = `Speak the following line as ${req.passenger.name} (${req.passenger.persona}, ${req.passenger.languageStyle}) in a ${delivery} Bengaluru tone. Output only the spoken line:\n${text}`;
 
+  // Pass ONLY the exact passenger line to Gemini TTS so no instructions are ever spoken aloud.
   let lastError: unknown;
   for (const model of TTS_MODELS) {
     try {
       const response = await ai.models.generateContent({
         model,
-        contents: prompt,
+        contents: text,
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
@@ -967,7 +964,7 @@ Rules:
 - Maximum 12 words!
 - MUST clearly state whether to go LEFT, STRAIGHT/MIDDLE, or RIGHT at the exact landmark (e.g., "Left at Marathahalli bridge, macha!" or "Take right at Sony World!").
 - Mention the exact landmark name.
-- Match the passenger's exact languageStyle ("English", "Kannada-English", or "Hinglish") and current mood (0-100).`;
+- Match the passenger's exact languageStyle ("English" or "Kannada-English" ONLY — never Hindi/Hinglish) and current mood (0-100).`;
 
   const userPrompt = JSON.stringify({
     passenger: {

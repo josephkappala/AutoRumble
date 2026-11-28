@@ -1,4 +1,4 @@
-export type LanguageStyle = 'English' | 'Kannada-English' | 'Hinglish';
+export type LanguageStyle = 'English' | 'Kannada-English';
 
 export type ObstacleType =
   | 'car'
